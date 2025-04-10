@@ -45,11 +45,14 @@ pip install -r requirements.txt
 3. Set up environment variables by creating a `.env` file in the root directory with the following contents:
 ```
 # Database configuration
-DATABASE_NAME=aspire_docs_db
-DATABASE_USER=postgres
-DATABASE_PASSWORD=your_password
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
+DB_NAME=your_database_name
+DB_USER=your_database_user
+DB_PASSWORD=your_database_password
+DB_HOST=your_database_host
+DB_PORT=your_database_port
+
+# OpenRouter API
+OPENROUTER_API_KEY=your_openrouter_api_key
 
 # Dropbox integration
 DROPBOX_APPKEY=your_dropbox_app_key
@@ -58,7 +61,15 @@ DROPBOX_REFRESH_TOKEN=your_dropbox_refresh_token
 DROPBOX_TOKEN=your_dropbox_access_token
 ```
 
-4. Set up Dropbox integration (optional):
+Note that the database connection parameters use `DB_NAME`, `DB_USER`, etc. rather than `DATABASE_URL`. Make sure to use these exact variable names.
+
+4. Set up PostgreSQL with pgvector extension:
+   - Install PostgreSQL 13+ on your server
+   - Install pgvector extension: `CREATE EXTENSION vector;`
+   - Create a dedicated database for the application
+   - Update your `.env` file with the correct database credentials
+
+5. Set up Dropbox integration (optional):
 ```bash
 python setup_dropbox.py
 ```
@@ -68,14 +79,67 @@ This script will guide you through the OAuth process to obtain the necessary tok
 
 1. Start the application:
 ```bash
-python main.py
+streamlit run app.py
 ```
 
 2. Upload your PDFs through the web interface or set up the Dropbox integration for automatic syncing.
 
-3. Enter your query in the search bar to retrieve relevant information from your documents.
+3. Select documents from the sidebar to include in your search.
 
-4. The application will display the most relevant passages from your documents, along with the source file information.
+4. Ask questions about your selected documents using the chat interface.
+
+5. The application will display AI-generated answers based on the content of your documents, along with source citations.
+
+## Database Configuration
+
+The application requires a PostgreSQL database with the pgvector extension installed. Here's how to set it up:
+
+### PostgreSQL Setup
+
+1. Install PostgreSQL 13+ on your server
+2. Create a database for the application:
+```sql
+CREATE DATABASE aspire_docs;
+```
+
+3. Install the pgvector extension:
+```sql
+\c aspire_docs
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+4. Create a dedicated user (optional):
+```sql
+CREATE USER aspire_user WITH PASSWORD 'your_secure_password';
+GRANT ALL PRIVILEGES ON DATABASE aspire_docs TO aspire_user;
+```
+
+5. Update your `.env` file with these credentials:
+```
+DB_NAME=aspire_docs
+DB_USER=aspire_user
+DB_PASSWORD=your_secure_password
+DB_HOST=localhost
+DB_PORT=5432
+```
+
+### Database Initialization
+
+The application will automatically initialize the necessary tables on first run, but you can also do this manually:
+
+```bash
+python -c "from app_database import initialize_pgvector; initialize_pgvector()"
+```
+
+### Verifying Database Connection
+
+If you're having issues with database connection, run the included diagnostic tool:
+
+```bash
+python check_db.py
+```
+
+This will check your database connection and verify that all tables are properly set up.
 
 ## Dropbox Integration
 
@@ -120,8 +184,15 @@ If you encounter any authentication issues with Dropbox:
 - **app_llm.py**: LLM interaction for question answering
 - **app_vector.py**: Vector store operations and search
 - **app_rag.py**: Advanced RAG techniques including hybrid retrieval
-- **app_dropbox.py**: Dropbox integration
+- **app_search.py**: SQL and keyword search functionality
+- **app_multi_search.py**: Functions for searching across multiple documents
+- **app_dropbox.py**: Dropbox integration utilities
 - **setup_dropbox.py**: Helper script for Dropbox OAuth setup
+- **check_db.py**: Diagnostic script for database connection
+- **check_streamlit_env.py**: Tool to verify Streamlit environment
+- **clear_db.py**: Utility to clear database tables
+- **deploy_secrets.py**: Helper for Streamlit Cloud deployment
+- **env_to_streamlit.py**: Tool for converting .env to Streamlit secrets
 
 ## Advanced Features
 
@@ -134,16 +205,17 @@ The application uses a sophisticated hybrid retrieval approach that combines mul
    - Identifies relevant passages even when keywords don't match
    - Implemented with pgvector for efficient similarity queries
 
-2. **TF-IDF Based Search**:
-   - Uses statistical term importance to find relevant chunks
+2. **Natural Language SQL Search**:
+   - Uses SQL queries to find relevant content based on keywords
    - Particularly effective for technical terms and exact matches
-   - Implements scikit-learn's TF-IDF vectorizer with cosine similarity
+   - Provides fast and reliable search results
 
-3. **Keyword Fallback Search**:
-   - Simple keyword matching as a reliability fallback
-   - Ensures results even if other methods fail
+3. **Table-Oriented Search**:
+   - Automatically detects when a query is likely looking for tabular data
+   - Boosts relevance of table chunks in search results
+   - Provides enhanced results for data and statistics queries
 
-The hybrid approach combines results from all methods and ranks them by relevance, providing more comprehensive and accurate results than any single method alone.
+The system automatically combines results from all methods, tracks metrics for each search type, and ranks them by relevance, providing comprehensive results.
 
 ### Advanced RAG Techniques
 
@@ -154,71 +226,73 @@ The system implements several advanced Retrieval-Augmented Generation techniques
    - Includes parent documents for additional context
    - Preserves broader context while maintaining specificity
 
-2. **Optimized Chunking**:
-   - Adaptive chunk sizes based on document characteristics
-   - Shorter documents: 300 character chunks with 30 char overlap
-   - Average documents: 500 character chunks with 50 char overlap
-   - Longer documents: 1000 character chunks with 100 char overlap
+2. **DocumentCollection System**:
+   - Custom extension of document lists that tracks search metrics
+   - Maintains information about which search methods found which results
+   - Enables diagnostic information and performance tracking
 
-3. **Enhanced Result Ranking**:
+3. **Optimized Chunking**:
+   - Adaptive chunk sizes based on document characteristics
+   - Smart separator detection preserves natural document structure
+   - Maintains semantic coherence in chunks
+
+4. **Enhanced Result Ranking**:
    - Multi-factor ranking based on semantic relevance and keyword matches
    - Weights results based on various factors (keyword presence, position, etc.)
    - Provides more relevant results first
-
-4. **Diagnostic Feedback**:
-   - Transparency in the retrieval process
-   - Shows number of results from each retrieval method
-   - Helps diagnose and optimize retrieval performance
-
-5. **Table Extraction and Processing**:
-   - Automatically detects and extracts tables from PDF documents
-   - Preserves table structure in document content and metadata
-   - Enhanced search that prioritizes tables for data-related queries
-   - Tables are specially marked in content with [TABLE X] tags
-   - Table content receives boosted relevance during search
-   - LLM receives special instructions when tables are present in results
-
-### LLM Performance
-
-The application uses **DeepSeek R1 Distill Llama 70B** (free) through OpenRouter API. This model offers exceptional performance for document analysis and question answering:
-
-- **High Reasoning Capabilities**: Excels at mathematical and logical reasoning (AIME 2024 pass@1: 70.0, MATH-500 pass@1: 94.5)
-- **128,000 Token Context Window**: Can process extensive document chunks for comprehensive analysis
-- **Zero Cost**: Completely free for both input and output tokens
-- **Advanced Distillation**: Distilled from Llama-3.3-70B-Instruct using DeepSeek R1's outputs
-- **Competitive Performance**: Comparable to larger frontier models
-
-To use this model in your application, specify the following in your API calls:
-```python
-response = openrouter_client.chat.completions.create(
-    model="deepseek/deepseek-r1-distill-llama-70b:free",
-    messages=[
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query_with_context}
-    ]
-)
-```
 
 ### Parallel Processing
 
 For improved performance when processing multiple documents, the application uses parallel processing with ThreadPoolExecutor.
 
-### Smart Separators
-
-The chunking system uses a nuanced set of text separators to maintain semantic boundaries:
-- Paragraphs, lines, sentences, and other natural text divisions
-- Ensures chunks maintain meaningful context
-
 ## Troubleshooting
 
-- **Database Connection Issues**: Verify your database credentials and ensure pgvector is installed
-- **Dropbox Authentication**: Run `python setup_dropbox.py` to generate new tokens if you encounter authentication errors
+### Database Connection Issues
+
+If you see "Database connection parameters missing" or similar warnings:
+
+1. **Check your .env file**: Make sure it exists and contains the correct database parameters:
+   ```
+   DB_NAME=your_database_name
+   DB_USER=your_database_user
+   DB_PASSWORD=your_database_password
+   DB_HOST=your_database_host
+   DB_PORT=your_database_port
+   ```
+
+2. **Verify environment variable loading**: Run the diagnostic script:
+   ```bash
+   python check_streamlit_env.py
+   ```
+   This will show if your environment variables are being loaded correctly.
+
+3. **Check PostgreSQL connection**: Make sure PostgreSQL is running and accessible:
+   ```bash
+   python check_db.py
+   ```
+   This script will test the database connection and report any issues.
+
+4. **Common problems**:
+   - Incorrect port number (standard PostgreSQL port is 5432)
+   - Missing pgvector extension
+   - Database server not running
+   - Incorrect host address (use 'localhost' for local development)
+
+### Dropbox Authentication
+
+- **Token Expired Error**: When you see "Dropbox token expired or invalid", run:
+  ```bash
+  python setup_dropbox.py
+  ```
+  to refresh your Dropbox tokens.
+
+- **Missing Refresh Token**: If you see "Unable to refresh access token without refresh token", make sure your `.env` file has the `DROPBOX_REFRESH_TOKEN` variable.
+
+### Other Common Issues
+
 - **PDF Processing Errors**: Ensure PDFs are not corrupted and are text-based (not scanned images)
-- **Missing Dependencies**: If you encounter `scikit-learn` related errors, run `pip install scikit-learn numpy`
 - **Vector Search Issues**: Make sure the pgvector extension is properly installed in your PostgreSQL database
-- **Table Extraction Requirements**: For table extraction to work, you need Java Runtime Environment (JRE) installed as tabula-py depends on it. If you see "`Failed to import jpype dependencies`" warnings, install JRE or use the fallback subprocess mode.
-- **JSON Serialization Errors**: If you encounter "`invalid input syntax for type json`" errors with table data, check for NaN values in tables. The system should handle these automatically, but complex tables may require manual fixing.
-- **API Limits**: If you encounter rate limits with OpenRouter, consider upgrading your API tier
+- **Table Extraction Requirements**: For table extraction to work, you need Java Runtime Environment (JRE) installed as tabula-py depends on it
 
 ## Deployment to Streamlit Cloud
 
