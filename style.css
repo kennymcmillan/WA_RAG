@@ -1,0 +1,185 @@
+/* 
+   Custom CSS for Aspire Academy Document Assistant
+   Based on the color scheme from the provided image
+*/
+
+/* Main color variables (defined in app.py as well)
+   APP_PRIMARY_COLOR = "#29477F" - Dark blue
+   APP_SECONDARY_COLOR = "#486CA5" - Medium blue
+   APP_ACCENT_COLOR = "#F2CA52" - Gold/Yellow accent
+   APP_TEXT_COLOR = "#333333" - Dark gray for text
+   APP_BACKGROUND_COLOR = "#FFFFFF" - White background
+   APP_LIGHT_GRAY = "#F5F5F7" - Light gray for bars/sections
+*/
+
+/* Global styles */
+.main .block-container {
+    padding-top: 2rem;
+}
+
+/* Page background color */
+.main {
+    background-color: #FFFFFF;
+}
+
+/* Sidebar styling */
+.sidebar .sidebar-content {
+    background-color: #F5F5F7;
+}
+
+/* Headings */
+h1, h2, h3, h4 {
+    color: #29477F !important;
+    font-weight: 600 !important;
+}
+
+/* Streamlit elements */
+.stButton button {
+    background-color: #486CA5 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 4px !important;
+    padding: 0.5rem 1rem !important;
+    transition: background-color 0.3s !important;
+}
+
+.stButton button:hover {
+    background-color: #29477F !important;
+}
+
+/* Primary action buttons - use accent color */
+.stButton[data-baseweb="button"] button[kind="primary"] {
+    background-color: #F2CA52 !important;
+    color: #29477F !important;
+    font-weight: bold !important;
+}
+
+.stButton[data-baseweb="button"] button[kind="primary"]:hover {
+    background-color: #e8bd40 !important;
+}
+
+/* Navigation tabs */
+button[data-baseweb="tab"] {
+    font-weight: bold !important;
+}
+
+button[data-baseweb="tab"][aria-selected="true"] {
+    color: #29477F !important;
+    border-bottom-color: #F2CA52 !important;
+    border-bottom-width: 3px !important;
+}
+
+button[data-baseweb="tab"]:hover {
+    color: #486CA5 !important;
+}
+
+/* Chat messages container */
+.stChatMessage {
+    background-color: #F5F5F7 !important;
+    border-radius: 8px !important;
+    padding: 0.5rem !important;
+    margin-bottom: 0.5rem !important;
+}
+
+/* User chat message */
+.stChatMessage[data-testid="stChatMessageUser"] {
+    background-color: #486CA5 !important;
+    color: white !important;
+}
+
+/* Assistant chat message */
+.stChatMessage[data-testid="stChatMessageAssistant"] {
+    background-color: #F5F5F7 !important;
+    color: #333333 !important;
+    border-left: 3px solid #F2CA52 !important;
+}
+
+/* Make source references stand out */
+blockquote {
+    border-left: 3px solid #F2CA52 !important;
+    padding-left: 1rem !important;
+    color: #486CA5 !important;
+    font-style: italic !important;
+}
+
+/* Expanders */
+.streamlit-expanderHeader {
+    color: #29477F !important;
+    font-weight: 600 !important;
+}
+
+/* Inputs */
+input, select, textarea {
+    border-radius: 4px !important;
+    border-color: #D1D1D6 !important;
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: #486CA5 !important;
+}
+
+/* Messages (info, success, warning, error) */
+.stAlert {
+    border-radius: 4px !important;
+}
+
+/* Change success messages from green to gold/yellow accent color */
+.stSuccess {
+    background-color: rgba(242, 202, 82, 0.2) !important;
+    color: #333333 !important;
+    border-color: #F2CA52 !important;
+}
+
+/* Also style the info messages with gold/yellow instead of blue */
+.stInfo {
+    background-color: rgba(242, 202, 82, 0.1) !important;
+    color: #333333 !important;
+    border-color: #F2CA52 !important;
+}
+
+/* Style the warning messages with gold/yellow */
+.stWarning {
+    background-color: rgba(242, 202, 82, 0.2) !important;
+    color: #333333 !important;
+    border-color: #F2CA52 !important;
+}
+
+/* Make sure all alert icons are gold */
+.stSuccess svg, .stInfo svg, .stWarning svg {
+    fill: #F2CA52 !important;
+}
+
+/* Keep error messages red for clear distinction of actual errors */
+.stError {
+    background-color: rgba(255, 76, 76, 0.1) !important;
+    border-color: #FF4C4C !important;
+}
+
+/* Multiselect */
+[data-baseweb="tag"] {
+    background-color: #486CA5 !important;
+    color: white !important;
+}
+
+[data-baseweb="tag"]:hover {
+    background-color: #29477F !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #F5F5F7;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #486CA5;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #29477F;
+} 

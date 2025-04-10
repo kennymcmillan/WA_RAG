@@ -28,6 +28,13 @@ import numpy as np
 from langchain_community.vectorstores.pgvector import PGVector
 import psycopg2
 
+# Must be the first Streamlit command
+st.set_page_config(
+    page_title="Aspire Academy Document Assistant",
+    page_icon="📚",
+    layout="wide"
+)
+
 # --- Environment setup and variable loading ---
 # Load environment variables from .env file or Streamlit secrets
 logging.info("Loading environment variables.")
@@ -92,12 +99,6 @@ import warnings
 # --- Suppress the LangChain deprecation warning ---
 warnings.filterwarnings("ignore", category=Warning)
 
-st.set_page_config(
-    page_title="Aspire Academy Document Assistant",
-    page_icon="📚",
-    layout="wide"
-)
-
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -110,19 +111,41 @@ logging.info("Loaded environment variables.")
 # Get database connection string
 CONNECTION_STRING = get_connection_string()
 
-# Aspire Academy colors
-ASPIRE_MAROON = "#7A0019"
-ASPIRE_GOLD = "#FFD700"
-ASPIRE_GRAY = "#F0F0F0"
+# --- Color scheme based on the image ---
+# Replace the maroon with a blue color scheme
+APP_PRIMARY_COLOR = "#29477F"  # Dark blue
+APP_SECONDARY_COLOR = "#486CA5"  # Medium blue
+APP_ACCENT_COLOR = "#F2CA52"  # Gold/Yellow accent
+APP_TEXT_COLOR = "#333333"  # Dark gray (almost black) for text
+APP_BACKGROUND_COLOR = "#FFFFFF"  # White background
+APP_LIGHT_GRAY = "#F5F5F7"  # Light gray for bars/sections
 
 # --- Enhanced Search Strategy Config ---
 # Prioritizing SQL search for reliability in certain scenarios
 PRIORITIZE_SQL_SEARCH = True  # Set to True to try SQL search first
 MIN_VECTOR_RESULTS = 5  # Minimum number of vector results before trying SQL search
 
+# --- Load custom CSS ---
+def load_css():
+    with open("style.css", "r") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+# Try to load custom CSS, if file doesn't exist yet, we'll create it later
+try:
+    load_css()
+except FileNotFoundError:
+    pass
+
 def main():
-    # Apply custom CSS
-    st.markdown(aspire_academy_css(), unsafe_allow_html=True)
+    logging.info("Starting Aspire Academy Document Assistant")
+    
+    if os.getenv("DATABASE_URL"):
+        logging.info("Database URL found in environment variables")
+    else:
+        logging.warning("Database URL not found in environment")
+    
+    # Apply custom CSS from style.css instead of the old method
+    # st.markdown(aspire_academy_css(), unsafe_allow_html=True)
     
     # Initialize session state
     if "messages" not in st.session_state:
@@ -147,10 +170,39 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.markdown(f"<h2 style='color: {ASPIRE_MAROON};'>Aspire Academy</h2>", unsafe_allow_html=True)
+        # Aspire Academy branding and title - adjust column ratio for larger logo
+        col1, col2 = st.columns([1.2, 3])
+        
+        with col1:
+            # Use a much larger logo size and add some CSS styling
+            st.markdown("""
+            <style>
+            [data-testid="stImage"] img {
+                width: 160px !important;
+                margin-top: 0;
+                vertical-align: top;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            st.image("aspire_logo.png", use_container_width=True)
+        
+        with col2:
+            st.markdown(f"""
+            <style>
+            .title-container {{
+                padding-top: 15px;
+            }}
+            </style>
+            <div class="title-container">
+            <h2 style='color: {APP_PRIMARY_COLOR}; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0;'>
+            Aspire Academy<br>
+            <span style='font-size: 1rem;'>Sports Dept<br>Document Search</span>
+            </h2>
+            </div>
+            """, unsafe_allow_html=True)
         
         # SECTION 1: Document selection - most important
-        st.markdown("### Select Documents to Search")
+        #st.markdown("### Select Documents to Search")
         
         # Load documents from database directly
         db_docs = load_documents_from_database()
@@ -166,10 +218,12 @@ def main():
         # Debug display - show what's available
         if st.session_state.processed_docs:
             available_docs = sorted(list(st.session_state.processed_docs.keys()))
-            chunk_counts = [f"{doc} ({st.session_state.processed_docs[doc]['chunk_count']} chunks)" for doc in available_docs]
-            st.write("Available documents:")
-            for doc_info in chunk_counts:
-                st.write(f"- {doc_info}")
+            
+            # Documents to hide from the display list
+            hidden_documents = ["Competition and Technical Rules – 2024 Edition (1).pdf"]
+            
+            # Filter displayed documents (but keep them in the session state)
+            displayed_docs = [doc for doc in available_docs if doc not in hidden_documents]
             
             # Define callback to ensure selection is saved and set pdf_viewer_doc_name
             def update_selected_docs():
@@ -182,7 +236,7 @@ def main():
                 else:
                     st.session_state.pdf_viewer_doc_name = None # Clear if no docs selected
 
-            # Select documents for search
+            # Select documents for search - use the full available list including hidden docs
             st.multiselect(
                 f"Choose documents to search (max {MAX_DOCUMENTS})",
                 options=available_docs,
@@ -205,50 +259,7 @@ def main():
         
         st.markdown("---")
         
-        # SECTION 2: Upload files to Dropbox and process
-        st.markdown("### Upload Documents")
-        
-        # Simple file uploader
-        pdf_docs = st.file_uploader(
-            "Upload PDF documents",
-            type="pdf",
-            accept_multiple_files=True
-        )
-        
-        if pdf_docs:
-            # Use root folder for Dropbox
-            rag_folder_path = "/"  # Root folder
-        
-        # Process button
-        if st.button("Upload to Dropbox & Process"):
-            with st.spinner("Uploading and processing files..."):
-                dbx = get_dropbox_client()
-                if dbx:
-                    success_count = 0
-                    for pdf in pdf_docs:
-                        try:
-                            # Upload to Dropbox
-                            pdf.seek(0)
-                            file_data = pdf.read()
-                            upload_result = upload_to_dropbox(file_data, pdf.name, rag_folder_path, dbx)
-                            
-                            if upload_result:
-                                # Process the file
-                                pdf.seek(0)
-                                process_result = process_pdf_file(pdf, False)
-                                if process_result:
-                                    success_count += 1
-                        except Exception as e:
-                            logging.error(f"Error processing {pdf.name}: {str(e)}")
-                            st.error(f"Error with {pdf.name}: {str(e)}")
-                    
-                    st.success(f"Uploaded and processed {success_count} of {len(pdf_docs)} files")
-                else:
-                    st.error("Could not connect to Dropbox. Please check your credentials.")
-        
-        st.markdown("---")
-        
-        # SECTION 3: Check and process Dropbox files
+        # SECTION 2: Check and process Dropbox files - MOVED UP
         st.markdown("### Dropbox Files")
         
         # Check Dropbox for unprocessed files
@@ -265,13 +276,13 @@ def main():
                     # Check for unprocessed files
                     unprocessed_files = [f for f in files if f not in st.session_state.processed_docs]
                     
-                    # Show all files found for debugging
-                    st.write(f"Found {len(files)} PDF files in Dropbox: {', '.join(files)}")
-                    st.write(f"Currently processed: {list(st.session_state.processed_docs.keys())}")
-                    
                     # Only show warning about unprocessed files
                     if unprocessed_files:
-                        st.warning(f"{len(unprocessed_files)} files need processing")
+                        # Use markdown with red text for the warning
+                        st.markdown(f"<span style='color: red; font-weight: bold;'>{len(unprocessed_files)} files need processing:</span>", unsafe_allow_html=True)
+                        # List the unprocessed files with red bullet points
+                        for file in unprocessed_files:
+                            st.markdown(f"<span style='color: red;'>• {file}</span>", unsafe_allow_html=True)
                         
                         # Button to process all unprocessed files
                         if st.button("Process All Unprocessed Files"):
@@ -315,10 +326,53 @@ def main():
                 st.error(f"Error accessing Dropbox: {str(e)}")
         else:
             st.error("Could not connect to Dropbox. Please check your credentials.")
+            
+        st.markdown("---")
+        
+        # SECTION 3: Upload files to Dropbox and process
+        st.markdown("### Upload Documents")
+        
+        # Simple file uploader
+        pdf_docs = st.file_uploader(
+            "Upload PDF documents",
+            type="pdf",
+            accept_multiple_files=True
+        )
+        
+        if pdf_docs:
+            # Use root folder for Dropbox
+            rag_folder_path = "/"  # Root folder
+        
+        # Process button
+        if st.button("Upload to Dropbox & Process"):
+            with st.spinner("Uploading and processing files..."):
+                dbx = get_dropbox_client()
+                if dbx:
+                    success_count = 0
+                    for pdf in pdf_docs:
+                        try:
+                            # Upload to Dropbox
+                            pdf.seek(0)
+                            file_data = pdf.read()
+                            upload_result = upload_to_dropbox(file_data, pdf.name, rag_folder_path, dbx)
+                            
+                            if upload_result:
+                                # Process the file
+                                pdf.seek(0)
+                                process_result = process_pdf_file(pdf, False)
+                                if process_result:
+                                    success_count += 1
+                        except Exception as e:
+                            logging.error(f"Error processing {pdf.name}: {str(e)}")
+                            st.error(f"Error with {pdf.name}: {str(e)}")
+                    
+                    st.success(f"Uploaded and processed {success_count} of {len(pdf_docs)} files")
+                else:
+                    st.error("Could not connect to Dropbox. Please check your credentials.")
         
         # Admin section - hidden by default
         with st.expander("Admin Controls", expanded=False):
-            st.markdown(f"<h3 style='color: {ASPIRE_MAROON};'>Database Administration</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='color: {APP_PRIMARY_COLOR};'>Database Administration</h3>", unsafe_allow_html=True)
             st.warning("Warning: These actions can cause data loss and should be used with caution.")
             
             # Add diagnostics toggle
@@ -448,11 +502,13 @@ def main():
             st.session_state.messages = []
     
     # Main content
-    tab1, tab2 = st.tabs(["Chat", "PDF Viewer"])
+    # Use plain text with emoji for tab labels - no HTML
+    tab1, tab2 = st.tabs(["💬 Chat", "📄 PDF Viewer"])
     
     with tab1:
-        st.markdown(f"<h1 style='color: {ASPIRE_MAROON};'>Aspire Academy Document Assistant</h1>", unsafe_allow_html=True)
-        st.markdown("Ask questions about your uploaded documents and get instant answers.")
+        # Remove the heading that says "Aspire Academy Document Assistant"
+        # st.markdown(f"<h1 style='color: {APP_PRIMARY_COLOR};'>Aspire Academy Document Assistant</h1>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color: {APP_SECONDARY_COLOR};'>Ask questions about your uploaded documents and get instant answers.</p>", unsafe_allow_html=True)
     
     # Display chat messages
         for message in st.session_state.messages:
@@ -632,12 +688,44 @@ def main():
                         
                         # Display the answer
                         st.markdown("### Answer")
-                        st.markdown(answer)
-                        
-                        # Display sources used
-                        if sources_text:
-                            st.markdown("### Sources")
-                            st.markdown(sources_text)
+                        # Process the final answer
+                        with st.chat_message("assistant"):
+                            if answer:
+                                # Split at each citation marker and wrap in a message
+                                parts = []
+                                current_part = ""
+                                sources = []
+                                
+                                for line in answer.split('\n'):
+                                    if line.startswith('Source:'):
+                                        if current_part.strip():
+                                            parts.append(("text", current_part.strip()))
+                                        # Collect sources separately instead of adding them directly
+                                        sources.append(line)
+                                        current_part = ""
+                                    else:
+                                        current_part += line + "\n"
+                                
+                                if current_part.strip():
+                                    parts.append(("text", current_part.strip()))
+                                
+                                # Display all text parts
+                                for part_type, part_content in parts:
+                                    if part_type == "text":
+                                        st.write(part_content)
+                                
+                                # Only show the top 5 most relevant sources
+                                if sources:
+                                    st.markdown(f"<p style='color: {APP_SECONDARY_COLOR}; font-weight: bold;'>Top Sources:</p>", unsafe_allow_html=True)
+                                    # Display at most 5 sources
+                                    for source in sources[:5]:
+                                        st.markdown(f"> _{source}_")
+                                    
+                                    # Show a count of additional sources if there are more than 5
+                                    if len(sources) > 5:
+                                        st.markdown(f"<p style='color: {APP_SECONDARY_COLOR}; font-style: italic; font-size: 0.9em;'>Plus {len(sources) - 5} additional sources</p>", unsafe_allow_html=True)
+                            else:
+                                st.error("Failed to generate an answer. Please try again.")
                     else:
                         st.warning("No context found to generate an answer.")
                 else:
@@ -647,13 +735,28 @@ def main():
             st.error(f"Error: {str(e)}")
     
     with tab2:
-        st.markdown(f"<h1 style='color: {ASPIRE_MAROON};'>Document Viewer</h1>", unsafe_allow_html=True)
-        
         # Display PDF viewer for selected document
-        if st.session_state.pdf_viewer_doc_name:
+        if st.session_state.selected_docs:
             try:
-                # Show which document is being displayed
-                st.subheader(f"Viewing: {st.session_state.pdf_viewer_doc_name}")
+                # If only one document is selected, automatically show it
+                if len(st.session_state.selected_docs) == 1:
+                    st.session_state.pdf_viewer_doc_name = st.session_state.selected_docs[0]
+                # If multiple documents are selected, show a dropdown to select which one to view
+                else:
+                    # Initialize pdf_viewer_doc_name to first selected doc if not set
+                    if not st.session_state.pdf_viewer_doc_name or st.session_state.pdf_viewer_doc_name not in st.session_state.selected_docs:
+                        st.session_state.pdf_viewer_doc_name = st.session_state.selected_docs[0]
+                    
+                    # Show dropdown to select which document to view
+                    selected_doc = st.selectbox(
+                        "Select document:",
+                        options=st.session_state.selected_docs,
+                        index=st.session_state.selected_docs.index(st.session_state.pdf_viewer_doc_name)
+                    )
+                    
+                    # Update the document to view if changed
+                    if selected_doc != st.session_state.pdf_viewer_doc_name:
+                        st.session_state.pdf_viewer_doc_name = selected_doc
                 
                 # Get Dropbox client
                 dbx = get_dropbox_client()
@@ -665,10 +768,13 @@ def main():
                     # Download file data
                     file_data = download_dropbox_file(file_path, dbx)
                     if file_data:
-                        # Display the PDF using streamlit-pdf-viewer
+                        # Use the original streamlit-pdf-viewer but with a smaller size
                         from streamlit_pdf_viewer import pdf_viewer
-                        pdf_viewer(file_data, width=700)
-                        st.success(f"Displaying PDF: {st.session_state.pdf_viewer_doc_name}")
+                        
+                        # Display PDF in a container with controlled size
+                        with st.container():
+                            # Display the PDF with a smaller width to ensure it fits on screen
+                            pdf_viewer(file_data, width=600, height=500)
                     else:
                         st.error(f"Could not download {st.session_state.pdf_viewer_doc_name} from Dropbox")
                 else:

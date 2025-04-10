@@ -27,10 +27,11 @@ from app_rag import implement_parent_document_retriever
 import tabula
 import pandas as pd
 
-# Aspire Academy colors
-ASPIRE_MAROON = "#7A0019"
-ASPIRE_GOLD = "#FFD700"
-ASPIRE_GRAY = "#F0F0F0"
+# Define Aspire Academy colors for custom HTML styling
+# Update to match the new color scheme
+APP_PRIMARY_COLOR = "#29477F"  # Dark blue
+APP_SECONDARY_COLOR = "#486CA5"  # Medium blue
+APP_ACCENT_COLOR = "#F2CA52"  # Gold/Yellow accent
 
 def aspire_academy_css():
     aspire_css = f"""
@@ -42,29 +43,62 @@ def aspire_academy_css():
             background-color: white;
         }}
         .stSidebar {{
-            background-color: {ASPIRE_GRAY};
+            background-color: {APP_ACCENT_COLOR};
         }}
         h1, h2, h3 {{
-            color: {ASPIRE_MAROON};
+            color: {APP_PRIMARY_COLOR};
         }}
         .stButton>button {{
-            background-color: {ASPIRE_MAROON};
+            background-color: {APP_PRIMARY_COLOR};
             color: white;
         }}
         .stButton>button:hover {{
-            background-color: {ASPIRE_MAROON};
-            color: {ASPIRE_GOLD};
+            background-color: {APP_PRIMARY_COLOR};
+            color: {APP_SECONDARY_COLOR};
         }}
         .source-citation {{
             font-size: 0.8em;
             color: gray;
-            border-left: 3px solid {ASPIRE_MAROON};
+            border-left: 3px solid {APP_PRIMARY_COLOR};
             padding-left: 10px;
             margin-top: 10px;
         }}
     </style>
     """
     return aspire_css
+
+# Define custom CSS for better formatting
+CUSTOM_HTML_STYLE = """
+<style>
+    .aspire-document-title {
+        font-size: 1.5em;
+        font-weight: bold;
+        margin-bottom: 10px;
+        color: APP_PRIMARY_COLOR;
+    }
+    .aspire-document-header {
+        padding: 10px;
+        margin-bottom: 10px;
+        background-color: APP_PRIMARY_COLOR;
+        color: white;
+        border-radius: 5px;
+    }
+    .aspire-document-section {
+        padding: 10px;
+        margin-bottom: 10px;
+        background-color: APP_PRIMARY_COLOR;
+        color: white;
+        border-radius: 5px;
+    }
+    .aspire-document-chunk {
+        padding: 10px;
+        margin-bottom: 10px;
+        background-color: #f0f0f0;
+        border-radius: 5px;
+        border-left: 3px solid APP_PRIMARY_COLOR;
+    }
+</style>
+"""
 
 # Get PDF text and metadata - Enhanced with table extraction
 def get_pdf_pages(pdf_docs, extract_tables=True):

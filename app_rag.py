@@ -240,18 +240,41 @@ def simple_sql_search(query: str, doc_name: str, limit: int = 30) -> List[Docume
                     logger.warning(f"Invalid row format: {row}")
                     continue
                     
-                doc_id, row_doc_name, page_num, content, meta = row
+                # Use indexed access instead of unpacking to handle potential issues
+                doc_id = row[0] if len(row) > 0 else None
+                row_doc_name = row[1] if len(row) > 1 else doc_name
+                page_num = row[2] if len(row) > 2 else None
+                content = row[3] if len(row) > 3 else ""
+                
+                # Handle metadata carefully
+                if len(row) > 4:
+                    meta = row[4]
+                else:
+                    meta = None
                 
                 # Skip empty content
                 if not content or len(content.strip()) == 0:
                     continue
                 
-                # Build metadata
-                metadata = {}
-                if meta and isinstance(meta, dict):
-                    metadata = meta
-                else:
-                    metadata = {"source": row_doc_name, "page": page_num}
+                # Build metadata safely
+                metadata = {"source": row_doc_name}
+                if page_num is not None:
+                    metadata["page"] = page_num
+                
+                # Handle metadata if available
+                if meta:
+                    try:
+                        if isinstance(meta, str) and meta.strip():
+                            try:
+                                meta_dict = json.loads(meta)
+                                metadata.update(meta_dict)
+                            except json.JSONDecodeError:
+                                # Not valid JSON, ignore
+                                pass
+                        elif isinstance(meta, dict):
+                            metadata.update(meta)
+                    except Exception as meta_error:
+                        logger.error(f"Error processing metadata: {str(meta_error)}")
                 
                 # Create document
                 documents.append(Document(
@@ -259,7 +282,8 @@ def simple_sql_search(query: str, doc_name: str, limit: int = 30) -> List[Docume
                     metadata=metadata
                 ))
             except Exception as e:
-                logger.error(f"Error processing row in SQL search: {str(e)}")
+                logger.error(f"Error processing row in SQL search: {str(e)}", exc_info=True)
+                continue
         
         logger.info(f"Returning {len(documents)} documents from SQL search")
         cursor.close()
@@ -462,98 +486,54 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
     if table_oriented:
         try:
             logger.info("Running table-specific search...")
-            # Use a database query targeting specifically table-containing chunks
-            conn = get_db_connection()
-            if conn:
-                cursor = conn.cursor()
-                table_sql = """
-                    SELECT id, doc_name, page_number, content, metadata
-                    FROM documents 
-                    WHERE doc_name = %s
-                    AND (
-                        metadata->>'has_tables' = 'true' 
-                        OR metadata->>'contains_table' = 'true'
-                        OR content LIKE '%[TABLE%'
-                    )
-                    LIMIT %s;
-                """
-                cursor.execute(table_sql, (doc_name, limit))
-                rows = cursor.fetchall()
-                
-                for row in rows:
-                    if row and len(row) >= 4 and row[3]:
-                        # Extract fields safely
-                        row_id = row[0] if len(row) > 0 else 0
-                        row_doc_name = row[1] if len(row) > 1 else doc_name
-                        page_num = row[2] if len(row) > 2 else 0
-                        content = row[3]
-                        metadata_raw = row[4] if len(row) > 4 else None
-                        
-                        # Parse metadata
-                        if metadata_raw:
-                            try:
-                                if isinstance(metadata_raw, str):
-                                    metadata = json.loads(metadata_raw)
-                                else:
-                                    metadata = metadata_raw
-                            except:
-                                metadata = {"source": row_doc_name, "page": page_num}
-                        else:
-                            metadata = {"source": row_doc_name, "page": page_num}
-                        
-                        # Ensure source and page are present
-                        if "source" not in metadata:
-                            metadata["source"] = row_doc_name
-                        if "page" not in metadata:
-                            metadata["page"] = page_num
-                            
-                        # Flag as coming from table search
-                        metadata["from_table_search"] = True
-                        
-                        # Add document
-                        sql_results.append(Document(
-                            page_content=content,
-                            metadata=metadata
-                        ))
-                
-                cursor.close()
-                conn.close()
-                logger.info(f"Table-specific search found {len(sql_results)} results")
-            else:
-                logger.error("Failed to connect to database for table search")
+            # Use our previously defined safer table_search function
+            table_results = table_search(query, doc_name, limit)
+            logger.info(f"Table-specific search found {len(table_results)} results")
+            
+            # Add unique results to SQL results
+            for doc in table_results:
+                if not any(doc.page_content == existing_doc.page_content for existing_doc in sql_results):
+                    sql_results.append(doc)
         except Exception as e:
-            logger.error(f"Table-specific search failed: {str(e)}")
+            logger.error(f"Table-specific search failed: {str(e)}", exc_info=True)
     
     # Emergency fallback if all methods fail
-    if len(sql_results) == 0 and len(vector_results) == 0 and len(sql_results) == 0:
+    if len(sql_results) == 0 and len(vector_results) == 0:
         logger.warning("No results from any method, using emergency fallback...")
         try:
             # Emergency fallback - just get some documents from this doc
             conn = get_db_connection()
             if conn:
                 cursor = conn.cursor()
-                # Super simple query to get any content from this document
-                fallback_sql = """
-                    SELECT id, doc_name, page_number, content
-                    FROM documents 
-                    WHERE doc_name = %s
-                    LIMIT 10;
-                """
-                cursor.execute(fallback_sql, (doc_name,))
-                rows = cursor.fetchall()
-                
-                for row in rows:
-                    if row and len(row) >= 4 and row[3]:
-                        # Extract fields safely
-                        row_doc_name = row[1] if len(row) > 1 else doc_name
-                        page_num = row[2] if len(row) > 2 else 0
-                        content = row[3]
-                        
-                        # Add document
-                        sql_results.append(Document(
-                            page_content=content,
-                            metadata={"source": row_doc_name, "page": page_num}
-                        ))
+                try:
+                    # Super simple query to get any content from this document
+                    fallback_sql = """
+                        SELECT doc_name, page_number, content
+                        FROM documents 
+                        WHERE doc_name = %s
+                        LIMIT 10;
+                    """
+                    cursor.execute(fallback_sql, (doc_name,))
+                    rows = cursor.fetchall()
+                    
+                    for row in rows:
+                        try:
+                            if row and len(row) >= 3 and row[2]:
+                                # Extract fields safely
+                                row_doc_name = row[0] if len(row) > 0 else doc_name
+                                page_num = row[1] if len(row) > 1 else 0
+                                content = row[2]
+                                
+                                # Add document
+                                sql_results.append(Document(
+                                    page_content=content,
+                                    metadata={"source": row_doc_name, "page": page_num, "fallback": True}
+                                ))
+                        except Exception as row_error:
+                            logger.error(f"Error processing fallback row: {str(row_error)}")
+                            continue
+                except Exception as query_error:
+                    logger.error(f"Fallback query failed: {str(query_error)}")
                 
                 cursor.close()
                 conn.close()
@@ -565,7 +545,7 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
             logger.error(f"Emergency fallback failed: {str(e)}")
             
         # If still no results, return empty collection
-        if len(sql_results) == 0:
+        if len(sql_results) == 0 and len(vector_results) == 0:
             logger.warning("All retrieval methods failed, returning empty results")
             return DocumentCollection()
     
@@ -964,7 +944,17 @@ def natural_language_sql_search(query: str, doc_name: str, limit: int = 30) -> L
         
         for row in rows:
             try:
-                doc_id, row_doc_name, page_num, content, meta = row
+                # Make sure we have enough columns
+                if len(row) < 5:
+                    logger.warning(f"Row has fewer than 5 columns: {len(row)}")
+                    continue
+                
+                # Extract data with safety checks
+                doc_id = row[0] if row[0] is not None else 0
+                row_doc_name = row[1] if row[1] is not None else doc_name
+                page_num = row[2] if row[2] is not None else 0
+                content = row[3] if row[3] is not None else ""
+                meta = row[4]  # Can be None
                 
                 # Skip empty content
                 if not content or len(content.strip()) == 0:
@@ -973,19 +963,30 @@ def natural_language_sql_search(query: str, doc_name: str, limit: int = 30) -> L
                 # Add to contents list for vectorization
                 contents.append(content)
                 
-                # Build document object
-                metadata = {}
-                if meta and isinstance(meta, dict):
-                    metadata = meta
-                else:
-                    metadata = {"source": row_doc_name, "page": page_num}
+                # Build document object - safely create metadata
+                metadata = {"source": row_doc_name}
+                if page_num is not None:
+                    metadata["page"] = page_num
+                
+                # Process metadata if available
+                if meta:
+                    try:
+                        if isinstance(meta, str) and meta.strip():
+                            # Try to parse JSON metadata
+                            meta_dict = json.loads(meta)
+                            metadata.update(meta_dict)
+                        elif isinstance(meta, dict):
+                            # It's already a dict, use it
+                            metadata.update(meta)
+                    except Exception as meta_error:
+                        logger.error(f"Error parsing metadata: {str(meta_error)}")
                     
                 doc_objects.append({
                     "content": content,
                     "metadata": metadata
                 })
             except Exception as e:
-                logger.error(f"Error processing row: {str(e)}")
+                logger.error(f"Error processing row: {str(e)}", exc_info=True)
                 continue
                 
         # If we couldn't get any content, return empty list
@@ -1042,3 +1043,103 @@ def natural_language_sql_search(query: str, doc_name: str, limit: int = 30) -> L
         logger.error(f"Error in natural language SQL search: {str(e)}")
         # Fall back to simple SQL search
         return simple_sql_search(query, doc_name, limit) 
+
+def table_search(query, doc_name=None, limit=20):
+    """Search specifically for table content"""
+    try:
+        logging.info(f"Running table-specific search for '{query}' in document: {doc_name}")
+        # Use direct SQL search with table-specific parameters
+        try:
+            # First attempt: Try the SQL keyword search with table focus
+            from app_search import sql_keyword_search
+            docs = sql_keyword_search(
+                query=query, 
+                doc_name=doc_name, 
+                include_tables=True, 
+                table_boost=3.0,  # Higher boost for tables
+                limit=limit
+            )
+            logging.info(f"Table search found {len(docs)} results using SQL keyword search")
+            
+            # Mark these as coming from table search
+            for doc in docs:
+                if isinstance(doc.metadata, dict):
+                    doc.metadata["from_table_search"] = True
+            
+            return docs
+        except Exception as e:
+            logging.error(f"Table-specific search failed: {str(e)}", exc_info=True)
+            
+            # Fallback - try direct document search with simpler parameters
+            try:
+                # Get database connection directly (most basic approach)
+                from app_database import get_db_connection
+                conn = get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    
+                    # Very basic query looking for table markers
+                    if doc_name:
+                        sql = """
+                            SELECT id, doc_name, page_number, content, metadata 
+                            FROM documents 
+                            WHERE content LIKE '%[TABLE%' AND doc_name = %s
+                            LIMIT %s
+                        """
+                        cursor.execute(sql, (doc_name, limit))
+                    else:
+                        sql = """
+                            SELECT id, doc_name, page_number, content, metadata 
+                            FROM documents 
+                            WHERE content LIKE '%[TABLE%'
+                            LIMIT %s
+                        """
+                        cursor.execute(sql, (limit,))
+                    
+                    rows = cursor.fetchall()
+                    logging.info(f"Basic table search fallback found {len(rows)} results")
+                    
+                    # Process results very defensively
+                    from langchain_core.documents import Document
+                    documents = []
+                    
+                    if not rows:
+                        return []
+                        
+                    for row in rows:
+                        try:
+                            # Make sure we have enough data
+                            if len(row) < 4:
+                                continue
+                                
+                            # Get document metadata
+                            metadata = {"source": row[1] if len(row) > 1 else "unknown"}
+                            if len(row) > 2 and row[2]:
+                                metadata["page"] = row[2]
+                                
+                            # Get content
+                            content = row[3] if len(row) > 3 else ""
+                            
+                            # Create document
+                            if content:
+                                doc = Document(
+                                    page_content=content,
+                                    metadata=metadata
+                                )
+                                documents.append(doc)
+                        except Exception as row_error:
+                            # Skip this row and continue
+                            logging.error(f"Error processing table row: {str(row_error)}")
+                            continue
+                    
+                    cursor.close()
+                    conn.close()
+                    return documents
+                    
+            except Exception as db_error:
+                logging.error(f"Basic table search fallback failed: {str(db_error)}")
+                return []
+            
+    except Exception as e:
+        logging.error(f"Error in table search: {str(e)}", exc_info=True)
+        return [] 
