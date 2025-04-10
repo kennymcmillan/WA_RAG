@@ -83,7 +83,8 @@ from app_dropbox import (get_dropbox_client, list_dropbox_folders,
                         list_dropbox_pdf_files, download_dropbox_file, create_file_like_object,
                         upload_to_dropbox)
 from app_search import direct_document_search, sql_keyword_search, check_document_exists, diagnose_vector_search_issues
-from app_rag import hybrid_retriever, fetch_parent_context
+from app_rag import hybrid_retriever, fetch_parent_context, DocumentCollection
+from app_multi_search import multi_document_search, MAX_DOCUMENTS
 
 # --- New import for warnings ---
 import warnings
@@ -183,7 +184,7 @@ def main():
 
             # Select documents for search
             st.multiselect(
-                "Choose documents to search",
+                f"Choose documents to search (max {MAX_DOCUMENTS})",
                 options=available_docs,
                 default=st.session_state.selected_docs,
                 key="doc_selector",
@@ -192,7 +193,11 @@ def main():
 
             # Show confirmation of selection
             if st.session_state.selected_docs:
-                st.success(f"Selected: {', '.join(st.session_state.selected_docs)}")
+                if len(st.session_state.selected_docs) > MAX_DOCUMENTS:
+                    st.warning(f"You've selected {len(st.session_state.selected_docs)} documents. Only the first {MAX_DOCUMENTS} will be used for search.")
+                    # The actual enforcement happens in the multi_document_search function
+                else:
+                    st.success(f"Selected: {', '.join(st.session_state.selected_docs)}")
             else:
                 st.warning("Please select documents to search")
         else:
@@ -315,6 +320,17 @@ def main():
         with st.expander("Admin Controls", expanded=False):
             st.markdown(f"<h3 style='color: {ASPIRE_MAROON};'>Database Administration</h3>", unsafe_allow_html=True)
             st.warning("Warning: These actions can cause data loss and should be used with caution.")
+            
+            # Add diagnostics toggle
+            st.markdown("### Display Options")
+            # Initialize the show_diagnostics state if it doesn't exist
+            if 'show_diagnostics' not in st.session_state:
+                st.session_state.show_diagnostics = False
+            
+            show_diag = st.toggle("Show Diagnostic Containers", value=st.session_state.show_diagnostics)
+            if show_diag != st.session_state.show_diagnostics:
+                st.session_state.show_diagnostics = show_diag
+                st.success(f"Diagnostic information is now {'visible' if show_diag else 'hidden'}")
             
             # Clear database button
             if st.button("Clear Document Database"):
@@ -487,73 +503,125 @@ def main():
                     
                     # Initialize results containers
                 raw_retrieved_docs = []
-                selected_doc = st.session_state.selected_docs[0] if st.session_state.selected_docs else None
-                    
-                    # Use our hybrid retriever that combines SQL and vector search
-                logging.info(f"Using hybrid retriever for '{user_question}' in {selected_doc}")
-                raw_retrieved_docs = hybrid_retriever(user_question, vector_store, selected_doc, limit=50)
-                logging.info(f"Hybrid retriever found {len(raw_retrieved_docs)} documents")
-                    
-                    # Collect and display details about the retrieved docs
+                
+                # Check if any documents are selected
+                if not st.session_state.selected_docs:
+                    st.warning("Please select one or more documents to search.")
+                    st.stop()
+                
+                # Check if too many documents are selected
+                if len(st.session_state.selected_docs) > MAX_DOCUMENTS:
+                    st.warning(f"You've selected {len(st.session_state.selected_docs)} documents. For optimal performance, the search will be limited to the first {MAX_DOCUMENTS} documents.")
+                
+                # Use multi-document search to search across all selected documents
+                logging.info(f"Searching across {len(st.session_state.selected_docs)} documents for: '{user_question}'")
+                raw_retrieved_docs = multi_document_search(
+                    user_question, 
+                    vector_store, 
+                    st.session_state.selected_docs,
+                    limit_per_doc=20
+                )
+                
+                # Log search results summary
+                docs_with_results = raw_retrieved_docs.metrics.get("documents_with_results", 0)
+                docs_searched = raw_retrieved_docs.metrics.get("documents_searched", 0)
+                logging.info(f"Found {len(raw_retrieved_docs)} relevant chunks from {docs_with_results}/{docs_searched} documents")
+                
+                # Collect and display details about the retrieved docs
                 if raw_retrieved_docs and len(raw_retrieved_docs) > 0:
                     logging.info(f"Found {len(raw_retrieved_docs)} docs, fetching parent contexts...")
                     # Add parent context to improve coherence
                     retrieved_docs = fetch_parent_context(raw_retrieved_docs, parent_limit=2)
                     logging.info(f"After parent context: {len(retrieved_docs)} docs")
                     
-                    # Display diagnostic info about docs
-                    with st.expander("Debug Information", expanded=False):
-                        st.write("### Query Analysis")
-                        st.text(f"Query: {user_question}")
-                        st.text(f"Document: {selected_doc}")
-                        st.text(f"Raw retrieved docs: {len(raw_retrieved_docs)}")
-                        st.text(f"Retrieved docs with parent context: {len(retrieved_docs)}")
+                    # Display diagnostic info about docs - Only if diagnostics are enabled
+                    if st.session_state.show_diagnostics:
+                        with st.expander("Debug Information", expanded=False):
+                            st.write("### Query Analysis")
+                            st.text(f"Query: {user_question}")
+                            st.text(f"Documents searched: {len(st.session_state.selected_docs)}")
+                            doc_names = ", ".join(st.session_state.selected_docs[:5])
+                            if len(st.session_state.selected_docs) > 5:
+                                doc_names += "..."
+                            st.text(f"Documents: {doc_names}")
+                            st.text(f"Raw retrieved docs: {len(raw_retrieved_docs)}")
+                            st.text(f"Retrieved docs with parent context: {len(retrieved_docs)}")
+                            
+                            # Multi-document metrics
+                            docs_with_results = raw_retrieved_docs.metrics.get("documents_with_results", 0)
+                            docs_searched = raw_retrieved_docs.metrics.get("documents_searched", 0)
+                            st.text(f"Documents with results: {docs_with_results}/{docs_searched}")
+                            
+                            # Additional metrics
+                            st.text(f"SQL search found: {getattr(retrieved_docs, 'sql_count', 0)} chunks")
+                            st.text(f"Vector search found: {getattr(retrieved_docs, 'vector_count', 0)} chunks")
+                            st.text(f"Table content chunks: {getattr(retrieved_docs, 'table_count', 0)}")
+                            st.text(f"Fallback search used: {getattr(retrieved_docs, 'fallback_count', 0)} chunks")
+                            st.text(f"Parent documents added: {getattr(retrieved_docs, 'parent_count', 0)} chunks")
                         
-                        # Additional metrics
-                        st.text(f"SQL search found: {getattr(retrieved_docs, 'sql_count', 0)} chunks")
-                        st.text(f"Vector search found: {getattr(retrieved_docs, 'vector_count', 0)} chunks")
-                        st.text(f"Fallback search used: {getattr(retrieved_docs, 'fallback_count', 0)} chunks")
-                        st.text(f"Parent documents added: {getattr(retrieved_docs, 'parent_count', 0)} chunks")
-                    
-                    # Move these OUTSIDE the Debug Information expander to fix nesting issue
-                    with st.expander("Diagnostics", expanded=False):
-                        st.write("### Database Contents Check")
-                        # Prepare sources list
-                        sources = []
-                        for doc in retrieved_docs:
-                            source = f"{doc.metadata.get('source', 'Unknown')} - Page {doc.metadata.get('page', 'Unknown')}"
-                            if source not in sources:
-                                sources.append(source)
+                        # Only show diagnostics containers if enabled
+                        with st.expander("Diagnostics", expanded=False):
+                            st.write("### Multi-Document Search Results")
+                            
+                            # Prepare sources list by document
+                            doc_sources = {}
+                            for doc in retrieved_docs:
+                                source_doc = doc.metadata.get('source', 'Unknown')
+                                page = doc.metadata.get('page', 'Unknown')
                                 
-                        # Context metrics
-                        total_content = "\n\n".join([doc.page_content for doc in retrieved_docs])
-                        char_count = len(total_content)
+                                if source_doc not in doc_sources:
+                                    doc_sources[source_doc] = []
+                                    
+                                source_info = f"Page {page}"
+                                if source_info not in doc_sources[source_doc]:
+                                    doc_sources[source_doc].append(source_info)
+                                    
+                            # Context metrics
+                            total_content = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                            char_count = len(total_content)
+                            
+                            # Add the context feedback
+                            st.text(f"Context for question has {char_count} characters from {len(doc_sources)} documents")
+                            
+                            # Display sources by document
+                            st.write("### Sources Used")
+                            for doc_name, pages in doc_sources.items():
+                                pages_str = ", ".join([str(p) for p in pages[:10]])
+                                if len(pages) > 10:
+                                    pages_str += "..."
+                                st.text(f"📄 {doc_name}: {pages_str}")
+                            
+                            # Display database contents check
+                            st.write("### Retrieved Content Sample")
+                            # Group samples by document
+                            samples_by_doc = {}
+                            for doc in retrieved_docs[:10]:  # Take first 10 docs for samples
+                                doc_name = doc.metadata.get('source', 'Unknown')
+                                if doc_name not in samples_by_doc:
+                                    samples_by_doc[doc_name] = []
+                                if len(samples_by_doc[doc_name]) < 2:  # Max 2 samples per document
+                                    samples_by_doc[doc_name].append(doc)
+                            
+                            # Display max 3 documents with 1-2 samples each
+                            for doc_name, samples in list(samples_by_doc.items())[:3]:
+                                st.write(f"**Document: {doc_name}**")
+                                for i, doc in enumerate(samples):
+                                    st.text(f"Page {doc.metadata.get('page', 'Unknown')}:")
+                                    st.text(doc.page_content[:250] + "..." if len(doc.page_content) > 250 else doc.page_content)
                         
-                        # Add the context feedback inside diagnostics
-                        st.text(f"Context for question has {char_count} characters from {len(sources)} sources")
-                        st.text(f"Sources used: {', '.join(sources[:5])}{'...' if len(sources) > 5 else ''}")
-                        
-                        # Display database contents check
-                        st.write("### Retrieved Content Sample")
-                        max_samples = min(3, len(retrieved_docs))
-                        for i in range(max_samples):
-                            doc = retrieved_docs[i]
-                            st.write(f"**{doc.metadata.get('source', 'Unknown')} - Page {doc.metadata.get('page', 'Unknown')}**")
-                            st.text(doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content)
-                    
-                    with st.expander("Vector Diagnostics", expanded=False):
-                        st.write("### Vector Store Analysis")
-                        st.text(f"Vector similarity search used: {getattr(retrieved_docs, 'vector_count', 0) > 0}")
-                        
-                        if hasattr(retrieved_docs, 'vector_count') and retrieved_docs.vector_count > 0:
-                            st.text("Vector search is functioning correctly!")
-                            st.text(f"Number of vector search results: {retrieved_docs.vector_count}")
-                        else:
-                            st.warning("Vector search returned no results. This may indicate:")
-                            st.text("1. No embeddings in the database")
-                            st.text("2. pgvector extension not properly configured")
-                            st.text("3. Filter conditions excluding all results")
-                            st.text("4. Issue with the langchain_pg_embedding table")
+                        with st.expander("Vector Diagnostics", expanded=False):
+                            st.write("### Vector Store Analysis")
+                            st.text(f"Vector similarity search used: {getattr(retrieved_docs, 'vector_count', 0) > 0}")
+                            
+                            if hasattr(retrieved_docs, 'vector_count') and retrieved_docs.vector_count > 0:
+                                st.text("Vector search is functioning correctly!")
+                                st.text(f"Number of vector search results: {retrieved_docs.vector_count}")
+                            else:
+                                st.warning("Vector search returned no results. This may indicate:")
+                                st.text("1. No embeddings in the database")
+                                st.text("2. pgvector extension not properly configured")
+                                st.text("3. Filter conditions excluding all results")
+                                st.text("4. Issue with the langchain_pg_embedding table")
                     
                     # Use sources to create context
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
