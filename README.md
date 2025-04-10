@@ -11,7 +11,7 @@ The Aspire Academy Document Assistant is a powerful document retrieval and quest
 - **PDF Document Processing**: Upload and automatically process PDFs
 - **Dropbox Integration**: Access, process, and save PDFs to/from Dropbox
 - **Smart Chunking**: Adaptive document chunking based on content characteristics
-- **Vector Search**: Semantic search using pgvector in PostgreSQL
+- **Hybrid Vector Search**: Combines semantic and keyword search for optimal results
 - **Question Answering**: Ask questions about document content with AI-powered answers
 - **Citation Support**: View the exact sources used to generate answers
 - **Auto-Processing**: Automatically process documents when uploaded
@@ -23,9 +23,11 @@ The Aspire Academy Document Assistant is a powerful document retrieval and quest
 - **Database**: PostgreSQL with pgvector extension
 - **Embeddings**: HuggingFace sentence-transformers (all-MiniLM-L6-v2)
 - **PDF Processing**: PyPDF2
-- **LLM Integration**: OpenAI API via OpenRouter
+- **LLM Integration**: OpenRouter API with DeepSeek R1 Distill Llama 70B (free, recommended)
+  - **Other Free Alternatives**: Phi-3-mini-4k-instruct, Llama-3-8b-instruct, Gemma-7b-it, or MistralLite
 - **Cloud Storage**: Dropbox API
 - **Vector Search**: LangChain with pgvector
+- **Text Analysis**: scikit-learn for TF-IDF based retrieval
 
 ## Installation
 
@@ -116,18 +118,78 @@ If you encounter any authentication issues with Dropbox:
 - **app_documents.py**: PDF processing and smart chunking
 - **app_embeddings.py**: Vector embedding functionality
 - **app_llm.py**: LLM interaction for question answering
-- **app_vector.py**: Vector store operations
+- **app_vector.py**: Vector store operations and search
+- **app_rag.py**: Advanced RAG techniques including hybrid retrieval
 - **app_dropbox.py**: Dropbox integration
 - **setup_dropbox.py**: Helper script for Dropbox OAuth setup
 
 ## Advanced Features
 
-### Optimized Chunking
+### Hybrid Retrieval System
 
-The application uses adaptive chunking that automatically adjusts based on the content's characteristics:
-- Shorter documents (< 1000 chars/page): 300 character chunks with 30 char overlap
-- Average documents: 500 character chunks with 50 char overlap
-- Longer documents (> 5000 chars/page): 1000 character chunks with 100 char overlap
+The application uses a sophisticated hybrid retrieval approach that combines multiple search methods:
+
+1. **Vector Similarity Search**: 
+   - Uses embeddings to find semantically similar content
+   - Identifies relevant passages even when keywords don't match
+   - Implemented with pgvector for efficient similarity queries
+
+2. **TF-IDF Based Search**:
+   - Uses statistical term importance to find relevant chunks
+   - Particularly effective for technical terms and exact matches
+   - Implements scikit-learn's TF-IDF vectorizer with cosine similarity
+
+3. **Keyword Fallback Search**:
+   - Simple keyword matching as a reliability fallback
+   - Ensures results even if other methods fail
+
+The hybrid approach combines results from all methods and ranks them by relevance, providing more comprehensive and accurate results than any single method alone.
+
+### Advanced RAG Techniques
+
+The system implements several advanced Retrieval-Augmented Generation techniques:
+
+1. **Parent-Child Document Retrieval**:
+   - Retrieves smaller chunks for precise matching
+   - Includes parent documents for additional context
+   - Preserves broader context while maintaining specificity
+
+2. **Optimized Chunking**:
+   - Adaptive chunk sizes based on document characteristics
+   - Shorter documents: 300 character chunks with 30 char overlap
+   - Average documents: 500 character chunks with 50 char overlap
+   - Longer documents: 1000 character chunks with 100 char overlap
+
+3. **Enhanced Result Ranking**:
+   - Multi-factor ranking based on semantic relevance and keyword matches
+   - Weights results based on various factors (keyword presence, position, etc.)
+   - Provides more relevant results first
+
+4. **Diagnostic Feedback**:
+   - Transparency in the retrieval process
+   - Shows number of results from each retrieval method
+   - Helps diagnose and optimize retrieval performance
+
+### LLM Performance
+
+The application uses **DeepSeek R1 Distill Llama 70B** (free) through OpenRouter API. This model offers exceptional performance for document analysis and question answering:
+
+- **High Reasoning Capabilities**: Excels at mathematical and logical reasoning (AIME 2024 pass@1: 70.0, MATH-500 pass@1: 94.5)
+- **128,000 Token Context Window**: Can process extensive document chunks for comprehensive analysis
+- **Zero Cost**: Completely free for both input and output tokens
+- **Advanced Distillation**: Distilled from Llama-3.3-70B-Instruct using DeepSeek R1's outputs
+- **Competitive Performance**: Comparable to larger frontier models
+
+To use this model in your application, specify the following in your API calls:
+```python
+response = openrouter_client.chat.completions.create(
+    model="deepseek/deepseek-r1-distill-llama-70b:free",
+    messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": query_with_context}
+    ]
+)
+```
 
 ### Parallel Processing
 
@@ -144,6 +206,8 @@ The chunking system uses a nuanced set of text separators to maintain semantic b
 - **Database Connection Issues**: Verify your database credentials and ensure pgvector is installed
 - **Dropbox Authentication**: Run `python setup_dropbox.py` to generate new tokens if you encounter authentication errors
 - **PDF Processing Errors**: Ensure PDFs are not corrupted and are text-based (not scanned images)
+- **Missing Dependencies**: If you encounter `scikit-learn` related errors, run `pip install scikit-learn numpy`
+- **Vector Search Issues**: Make sure the pgvector extension is properly installed in your PostgreSQL database
 - **API Limits**: If you encounter rate limits with OpenRouter, consider upgrading your API tier
 
 ## License

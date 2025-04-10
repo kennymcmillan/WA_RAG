@@ -5,7 +5,7 @@ This module handles interactions with large language models.
 Provides:
 - OpenAI client initialization using OpenRouter as a proxy
 - Question answering functionality based on provided context
-- Uses Claude-3-Haiku model via OpenRouter
+- Uses DeepSeek R1 Distill Llama 70B model (free) via OpenRouter
 - Structured prompting to ensure answers are grounded in the provided context
 """
 
@@ -60,21 +60,27 @@ def get_answer(question, context, retrieved_docs=None):
         INSTRUCTIONS:
         1. Only answer what you can based on the context above.
         2. If you don't know or the context doesn't contain the answer, say "I don't have enough information to answer that question."
-        3. Keep your answer concise and directly address the question.
-        4. Always cite specific page numbers when referring to information from the context.
+        3. Keep your answer concise and directly address the question. Aim for 2-3 paragraphs maximum.
+        4. ALWAYS cite specific page numbers when referring to information from the context.
         5. Format your answer in clear, easy-to-read text.
         6. Do not include general knowledge not found in the context.
         7. Do not cite sources that weren't included in the context.
+        8. Prioritize accuracy over comprehensiveness - it's better to provide a partial correct answer than to speculate.
+        9. When appropriate, use bullet points or numbered lists to organize complex information.
+        10. If there are numerical values or statistics in the context, include them precisely.
         """
         
-        # Get response from OpenRouter using Claude-3-Haiku
+        # Get response from OpenRouter using DeepSeek R1 Distill Llama 70B
         response = client.chat.completions.create(
-            model="anthropic/claude-3-haiku",  # Use Claude-3-Haiku for best balance of performance and cost
+            model="deepseek/deepseek-r1-distill-llama-70b:free",  # Free high-performance model with 128K context
             messages=[
+                {"role": "system", "content": "You are a document assistant for Aspire Academy. Your purpose is to answer questions based solely on the provided document context. You excel at summarizing information accurately, citing sources properly, and avoiding speculation beyond what's in the documents."},
                 {"role": "user", "content": prompt_text}
             ],
-            temperature=0.1,  # Lower temperature for more factual answers
-            max_tokens=1000   # Limit token usage
+            temperature=0.2,  # Balanced temperature for factual yet fluent answers
+            max_tokens=2000,  # Increased token limit for more detailed answers
+            top_p=0.9,         # Top-p sampling for high quality outputs
+            frequency_penalty=0.1  # Slight penalty to reduce repetition
         )
         
         # Extract the answer from the response

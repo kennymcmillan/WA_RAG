@@ -2,3 +2,4 @@
 .venv
 faiss_db
 faiss_index
+checkcode
