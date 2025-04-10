@@ -39,11 +39,19 @@ st.set_page_config(
 # Load environment variables from .env file or Streamlit secrets
 logging.info("Loading environment variables.")
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
+logging.info(f"Looking for .env file at: {dotenv_path}")
+logging.info(f".env file exists: {os.path.exists(dotenv_path)}")
 
 # First try loading from .env file (local development)
 if os.path.exists(dotenv_path):
-    load_dotenv(dotenv_path)
+    # Force reload to ensure variables are set
+    load_dotenv(dotenv_path, override=True)
     logging.info("Loaded environment variables from .env file.")
+    logging.info(f"DB_NAME loaded: {os.getenv('DB_NAME') is not None}")
+    logging.info(f"DB_HOST loaded: {os.getenv('DB_HOST') is not None}")
+    logging.info(f"DB_PORT loaded: {os.getenv('DB_PORT')}")
+else:
+    logging.error("ERROR: .env file not found!")
 
 # Check if we're in a Streamlit Cloud environment and use secrets if available
 try:
@@ -144,6 +152,18 @@ def main():
     else:
         logging.warning("Database URL not found in environment")
     
+    # Apply custom CSS for page layout
+    st.markdown("""
+        <style>
+               .block-container {
+                    padding-top: 1rem;
+                    padding-bottom: 0rem;
+                    padding-left: 5rem;
+                    padding-right: 5rem;
+                }
+        </style>
+        """, unsafe_allow_html=True)
+    
     # Apply custom CSS from style.css instead of the old method
     # st.markdown(aspire_academy_css(), unsafe_allow_html=True)
     
@@ -170,6 +190,22 @@ def main():
     
     # Sidebar
     with st.sidebar:
+        # Add custom CSS to remove top spacing
+        st.markdown("""
+        <style>
+        section[data-testid="stSidebar"] > div {
+            padding-top: 0 !important;
+        }
+        section[data-testid="stSidebar"] .block-container {
+            padding-top: 0 !important;
+            margin-top: 0 !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+            padding-bottom: 0 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
         # Aspire Academy branding and title - adjust column ratio for larger logo
         col1, col2 = st.columns([1.2, 3])
         
@@ -503,14 +539,47 @@ def main():
     
     # Main content
     # Use plain text with emoji for tab labels - no HTML
+    
+    # Add custom CSS to reduce space above tabs and content
+    st.markdown("""
+    <style>
+    /* Remove space above tabs */
+    .main .block-container {
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    
+    /* Make tabs more compact */
+    button[data-baseweb="tab"] {
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+        margin-top: 0 !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    /* Tab content starts higher */
+    .stTabs [data-testid="stTabContent"] {
+        padding-top: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     tab1, tab2 = st.tabs(["💬 Chat", "📄 PDF Viewer"])
     
     with tab1:
-        # Remove the heading that says "Aspire Academy Document Assistant"
-        # st.markdown(f"<h1 style='color: {APP_PRIMARY_COLOR};'>Aspire Academy Document Assistant</h1>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color: {APP_SECONDARY_COLOR};'>Ask questions about your uploaded documents and get instant answers.</p>", unsafe_allow_html=True)
+        # Remove the paragraph that adds extra space
+        # st.markdown(f"<p style='color: {APP_SECONDARY_COLOR};'>Ask questions about your uploaded documents and get instant answers.</p>", unsafe_allow_html=True)
     
-    # Display chat messages
+        # Add an initial welcome message if the chat is empty
+        if not st.session_state.messages:
+            with st.chat_message("assistant"):
+                if not os.getenv("DATABASE_URL"):
+                    st.markdown("**WARNING: Database URL not found in environment.**\n\nI'm ready to answer questions about your selected documents. What would you like to know?")
+                else:
+                    st.markdown("I'm ready to answer questions about your selected documents. What would you like to know?")
+                st.session_state.messages.append({"role": "assistant", "content": "I'm ready to answer questions about your selected documents. What would you like to know?"})
+    
+        # Display chat messages
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])

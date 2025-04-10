@@ -52,18 +52,38 @@ def get_connection_string():
 
 def get_db_connection():
     try:
+        # Get connection parameters with explicit logging
+        db_name = os.getenv("DB_NAME")
+        db_user = os.getenv("DB_USER") 
+        db_pwd = os.getenv("DB_PASSWORD")
+        db_host = os.getenv("DB_HOST")
+        db_port = os.getenv("DB_PORT")
+        
+        # Check if all required parameters are present
+        if not all([db_name, db_user, db_pwd, db_host, db_port]):
+            missing = []
+            if not db_name: missing.append("DB_NAME")
+            if not db_user: missing.append("DB_USER")
+            if not db_pwd: missing.append("DB_PASSWORD")
+            if not db_host: missing.append("DB_HOST")
+            if not db_port: missing.append("DB_PORT")
+            logging.error(f"Missing database connection parameters: {', '.join(missing)}")
+            return None
+        
+        # Log the connection attempt without exposing credentials
+        logging.info(f"Connecting to database {db_name} at {db_host}:{db_port}")
+        
         conn = psycopg2.connect(
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT")
+            dbname=db_name,
+            user=db_user,
+            password=db_pwd,
+            host=db_host,
+            port=db_port
         )
-        logging.info("Database connection successful.") # Added logging
+        logging.info("Database connection successful.")
         return conn
     except Exception as e:
-        logging.error(f"Error connecting to database: {str(e)}") # Added logging
-        st.error(f"Error connecting to database: {str(e)}")
+        logging.error(f"Error connecting to database: {str(e)}")
         return None
 
 def check_pgvector_extension():

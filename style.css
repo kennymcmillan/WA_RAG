@@ -14,7 +14,25 @@
 
 /* Global styles */
 .main .block-container {
-    padding-top: 2rem;
+    padding-top: 0.5rem !important;
+}
+
+/* Remove extra space from the top of the app */
+.stApp {
+    margin-top: 0 !important;
+}
+
+/* Remove padding from the header */
+header {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    height: auto !important;
+}
+
+/* Make tabs have less padding */
+[data-testid="stTabsHeader"] {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
 }
 
 /* Page background color */
@@ -25,12 +43,20 @@
 /* Sidebar styling */
 .sidebar .sidebar-content {
     background-color: #F5F5F7;
+    padding-top: 0 !important;
+}
+
+/* Remove extra padding from the top of the sidebar */
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0 !important;
 }
 
 /* Headings */
 h1, h2, h3, h4 {
     color: #29477F !important;
     font-weight: 600 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0.5rem !important;
 }
 
 /* Streamlit elements */
