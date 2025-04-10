@@ -250,8 +250,8 @@ def main():
                                                 documents = get_text_chunks(pages_data)
                                                 if create_vector_store(documents, file_name):
                                                     st.session_state.processed_docs[file_name] = {
-                                                        "chunk_count": len(documents)
-                                                    }
+                                                "chunk_count": len(documents)
+                                            }
                                                     success_count += 1
                                     except Exception as e:
                                         logging.error(f"Error processing {file_name}: {str(e)}")
@@ -388,8 +388,8 @@ def main():
                     st.error(f"Error performing complete reset: {str(e)}")
             
             # Reset chat button
-            if st.button("Reset Chat"):
-                st.session_state.messages = []
+        if st.button("Reset Chat"):
+            st.session_state.messages = []
     
     # Main content
     tab1, tab2 = st.tabs(["Chat", "PDF Viewer"])
@@ -397,8 +397,8 @@ def main():
     with tab1:
         st.markdown(f"<h1 style='color: {ASPIRE_MAROON};'>Aspire Academy Document Assistant</h1>", unsafe_allow_html=True)
         st.markdown("Ask questions about your uploaded documents and get instant answers.")
-        
-        # Display chat messages
+    
+    # Display chat messages
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
@@ -410,54 +410,54 @@ def main():
                     for source in message["sources"]:
                         st.markdown(f"- {source}", unsafe_allow_html=True)
                     st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Chat input
+    if user_question := st.chat_input("Ask a question about your documents..."):
+        # Add user message to chat history
+        st.chat_message("user").markdown(user_question)
+        st.session_state.messages.append({"role": "user", "content": user_question})
+        logging.info(f"User question received: {user_question}")
         
-        # Chat input
-        if user_question := st.chat_input("Ask a question about your documents..."):
-            # Add user message to chat history
-            st.chat_message("user").markdown(user_question)
-            st.session_state.messages.append({"role": "user", "content": user_question})
-            logging.info(f"User question received: {user_question}")
-            
-            try:
-                if not st.session_state.selected_docs:
-                    logging.warning("User asked question but no documents selected.")
-                    st.error("Please select at least one document to search!")
-                elif not CONNECTION_STRING:
-                     logging.error("User asked question but DB connection string is missing.")
-                     st.error("Database connection is not configured. Please check your .env file.")
-                elif not embeddings:
-                     logging.error("User asked question but embeddings model failed to initialize.")
-                     st.error("Embeddings model not available. Please check logs.")
-                else:
-                    logging.info(f"Searching selected documents: {st.session_state.selected_docs}")
+        try:
+            if not st.session_state.selected_docs:
+                logging.warning("User asked question but no documents selected.")
+                st.error("Please select at least one document to search!")
+            elif not CONNECTION_STRING:
+                 logging.error("User asked question but DB connection string is missing.")
+                 st.error("Database connection is not configured. Please check your .env file.")
+            elif not embeddings:
+                 logging.error("User asked question but embeddings model failed to initialize.")
+                 st.error("Embeddings model not available. Please check logs.")
+            else:
+                logging.info(f"Searching selected documents: {st.session_state.selected_docs}")
                     # Initialize PGVector store - Using our custom implementation
-                    logging.info("Initializing CustomPGVector store for search...")
+                logging.info("Initializing CustomPGVector store for search...")
                     
                     # Use our custom PGVector implementation instead of the standard one
-                    vector_store = CustomPGVector(
-                        connection_string=CONNECTION_STRING,
-                        embedding_function=embeddings,
+                vector_store = CustomPGVector(
+                    connection_string=CONNECTION_STRING,
+                    embedding_function=embeddings,
                         collection_name="documents", # Corresponds to table name
                         use_jsonb=True
                     )
-                    logging.info("CustomPGVector store initialized with our metadata matching function.")
+                logging.info("CustomPGVector store initialized with our metadata matching function.")
                     
                     # Debug information about the selected documents
-                    logging.info(f"Selected documents for search: {st.session_state.selected_docs}")
+                logging.info(f"Selected documents for search: {st.session_state.selected_docs}")
                     
                     # Initialize results containers
-                    raw_retrieved_docs = []
-                    selected_doc = st.session_state.selected_docs[0] if st.session_state.selected_docs else None
+                raw_retrieved_docs = []
+                selected_doc = st.session_state.selected_docs[0] if st.session_state.selected_docs else None
                     
                     # Use our hybrid retriever that combines SQL and vector search
-                    logging.info(f"Using hybrid retriever for '{user_question}' in {selected_doc}")
-                    raw_retrieved_docs = hybrid_retriever(user_question, vector_store, selected_doc, limit=50)
-                    logging.info(f"Hybrid retriever found {len(raw_retrieved_docs)} documents")
+                logging.info(f"Using hybrid retriever for '{user_question}' in {selected_doc}")
+                raw_retrieved_docs = hybrid_retriever(user_question, vector_store, selected_doc, limit=50)
+                logging.info(f"Hybrid retriever found {len(raw_retrieved_docs)} documents")
                     
                     # Enhance results with parent context
-                    if raw_retrieved_docs:
-                        raw_retrieved_docs = fetch_parent_context(raw_retrieved_docs, selected_doc)
-                        logging.info(f"After fetching parent context: {len(raw_retrieved_docs)} documents")
+                if raw_retrieved_docs:
+                    raw_retrieved_docs = fetch_parent_context(raw_retrieved_docs, selected_doc)
+                    logging.info(f"After fetching parent context: {len(raw_retrieved_docs)} documents")
                     
                     # Show debug info in UI if enabled
                     with st.expander("Debug Information", expanded=True):
@@ -550,47 +550,47 @@ def main():
                     logging.info(f"Final results: {len(retrieved_docs)} chunks.")
                 
                     # Generate answer only if we have relevant chunks
-                    if not retrieved_docs:
-                        answer = "I don't have enough information in the selected documents to answer that question."
-                        sources = []
-                    else:
+                if not retrieved_docs:
+                    answer = "I don't have enough information in the selected documents to answer that question."
+                    sources = []
+                else:
                         # Extract context and sources from retrieved LangChain Documents
-                        logging.info("Extracting context and sources from retrieved chunks.")
-                        context_parts = []
-                        sources = set() # Use a set to avoid duplicate source listings
+                    logging.info("Extracting context and sources from retrieved chunks.")
+                    context_parts = []
+                    sources = set() # Use a set to avoid duplicate source listings
                         
                         # Sort documents by source and page for better organization
-                        sorted_docs = sorted(retrieved_docs, 
+                    sorted_docs = sorted(retrieved_docs, 
                                             key=lambda x: (x.metadata.get('source', 'Unknown'), 
                                                           x.metadata.get('page', 0)))
                         
                         # Process documents with better formatting
-                        for doc in sorted_docs:
-                            source = doc.metadata.get('source', 'Unknown Source')
-                            page = doc.metadata.get('page', 'Unknown Page')
+                    for doc in sorted_docs:
+                        source = doc.metadata.get('source', 'Unknown Source')
+                        page = doc.metadata.get('page', 'Unknown Page')
                             
                             # Check if this is a parent or child document for debugging
-                            doc_type = "Parent" if doc.metadata.get('is_parent', False) else "Child"
-                            logging.info(f"Adding {doc_type} document from {source} (Page {page})")
+                        doc_type = "Parent" if doc.metadata.get('is_parent', False) else "Child"
+                        logging.info(f"Adding {doc_type} document from {source} (Page {page})")
                             
                             # Add formatted context with clear source attribution
-                            context_parts.append(f"From {source} (Page {page}):\n{doc.page_content.strip()}")
-                            sources.add(f"{source} (Page {page})")
-                        
+                        context_parts.append(f"From {source} (Page {page}):\n{doc.page_content.strip()}")
+                        sources.add(f"{source} (Page {page})")
+                    
                         # Join with double newlines for clear separation between chunks
-                        context = "\n\n".join(context_parts)
-                        sources = sorted(list(sources)) # Convert back to sorted list for display
-                        logging.info(f"Generated context for LLM with {len(context_parts)} chunks from {len(sources)} sources")
+                    context = "\n\n".join(context_parts)
+                    sources = sorted(list(sources)) # Convert back to sorted list for display
+                    logging.info(f"Generated context for LLM with {len(context_parts)} chunks from {len(sources)} sources")
 
                         # Debug: Show context length and structure
-                        st.info(f"Context for question has {len(context)} characters from {len(sources)} sources")
+                    st.info(f"Context for question has {len(context)} characters from {len(sources)} sources")
                         
                         # Add sample of context with visible chunk separators for debugging
-                        with st.expander("Sample of context sent to LLM"):
+                    with st.expander("Sample of context sent to LLM"):
                             # Show the first 3 chunks for debugging
-                            st.markdown("```")
-                            for i, chunk in enumerate(context_parts[:3]):
-                                st.markdown(f"Chunk {i+1}:\n{chunk[:300]}...\n\n")
+                        st.markdown("```")
+                        for i, chunk in enumerate(context_parts[:3]):
+                            st.markdown(f"Chunk {i+1}:\n{chunk[:300]}...\n\n")
                             st.markdown("```")
                             st.info(f"Showing 3 of {len(context_parts)} total chunks")
 
@@ -611,12 +611,12 @@ def main():
                             for keyword, count in keyword_counts.items():
                                 st.text(f"'{keyword}': found in {count} of {len(context_parts)} chunks")
 
-                        # Generate answer
+                    # Generate answer
                         logging.info("--- Before get_answer ---")
-                        with st.spinner("Generating answer..."):
-                            answer = get_answer(user_question, context)
-                            logging.info("--- After get_answer ---")
-                        logging.info("Answer received from OpenRouter.")
+                    with st.spinner("Generating answer..."):
+                        answer = get_answer(user_question, context)
+                        logging.info("--- After get_answer ---")
+                    logging.info("Answer received from OpenRouter.")
 
                 # Display assistant response
                 with st.chat_message("assistant"):
@@ -636,8 +636,8 @@ def main():
                     "content": answer,
                     "sources": sources
                 })
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
     
     with tab2:
         st.markdown(f"<h1 style='color: {ASPIRE_MAROON};'>Document Viewer</h1>", unsafe_allow_html=True)
