@@ -419,4 +419,158 @@ def direct_document_search(query, doc_name=None, use_fulltext=True, limit=50):
             logging.error(f"Fallback database query failed: {str(e)}")
             if conn and not conn.closed:
                 conn.close()
-            return [] 
+            return []
+
+def diagnose_vector_search_issues(doc_name=None, limit=5):
+    """
+    Diagnostic function to examine documents in the database and verify embedding presence
+    
+    Args:
+        doc_name (str): Optional document name to filter by
+        limit (int): Maximum number of records to examine
+        
+    Returns:
+        dict: Diagnostic information
+    """
+    logging.info("Running vector search diagnostics")
+    result = {
+        "total_documents": 0,
+        "documents_with_embeddings": 0,
+        "document_names": [],
+        "embedding_samples": [],
+        "issues": []
+    }
+    
+    # Connect to database
+    conn = get_db_connection()
+    if not conn:
+        logging.error("Failed to connect to database for diagnostics")
+        result["issues"].append("Database connection failed")
+        return result
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Check total document count
+        cursor.execute("SELECT COUNT(*) FROM documents")
+        result["total_documents"] = cursor.fetchone()[0]
+        
+        # Get list of document names
+        cursor.execute("SELECT DISTINCT doc_name FROM documents")
+        result["document_names"] = [row[0] for row in cursor.fetchall()]
+        
+        # Check if langchain_pg_embedding table exists
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'langchain_pg_embedding'
+            )
+        """)
+        embedding_table_exists = cursor.fetchone()[0]
+        
+        if not embedding_table_exists:
+            result["issues"].append("The langchain_pg_embedding table doesn't exist")
+            return result
+        
+        # Count documents with embeddings
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM langchain_pg_embedding
+        """)
+        result["documents_with_embeddings"] = cursor.fetchone()[0]
+        
+        if result["documents_with_embeddings"] == 0:
+            result["issues"].append("No documents have embeddings")
+            return result
+        
+        # Check for specific document if provided
+        if doc_name:
+            # Try to find the document in the documents table
+            cursor.execute("SELECT COUNT(*) FROM documents WHERE doc_name = %s", (doc_name,))
+            doc_count = cursor.fetchone()[0]
+            
+            if doc_count == 0:
+                result["issues"].append(f"Document '{doc_name}' not found in documents table")
+            else:
+                result["doc_count"] = doc_count
+                
+                # Check if this document has embeddings
+                try:
+                    cursor.execute("""
+                        SELECT COUNT(*) 
+                        FROM langchain_pg_embedding 
+                        WHERE cmetadata->>'source' = %s
+                    """, (doc_name,))
+                    embedding_count = cursor.fetchone()[0]
+                    result["doc_embedding_count"] = embedding_count
+                    
+                    if embedding_count == 0:
+                        result["issues"].append(f"Document '{doc_name}' has no embeddings")
+                except Exception as e:
+                    logging.error(f"Error checking embeddings for '{doc_name}': {str(e)}")
+                    result["issues"].append(f"Error checking embeddings: {str(e)}")
+        
+        # Sample some embeddings to verify they are non-empty
+        try:
+            if doc_name:
+                cursor.execute("""
+                    SELECT le.embedding, le.cmetadata, d.content
+                    FROM langchain_pg_embedding le
+                    JOIN documents d ON le.cmetadata->>'source' = d.doc_name
+                    WHERE le.cmetadata->>'source' = %s
+                    LIMIT %s
+                """, (doc_name, limit))
+            else:
+                cursor.execute("""
+                    SELECT le.embedding, le.cmetadata, d.content
+                    FROM langchain_pg_embedding le
+                    JOIN documents d ON le.cmetadata->>'source' = d.doc_name
+                    LIMIT %s
+                """, (limit,))
+                
+            samples = cursor.fetchall()
+            
+            for i, sample in enumerate(samples):
+                embedding = sample[0]
+                metadata = sample[1]
+                content = sample[2]
+                
+                sample_info = {
+                    "has_embedding": embedding is not None and len(embedding) > 0,
+                    "embedding_dimensions": len(embedding) if embedding else 0,
+                    "metadata": metadata,
+                    "content_preview": content[:100] + "..." if content and len(content) > 100 else content
+                }
+                
+                result["embedding_samples"].append(sample_info)
+                
+                # Check for potential issues
+                if not sample_info["has_embedding"]:
+                    result["issues"].append(f"Sample {i+1} has empty embedding")
+                if not metadata or not isinstance(metadata, dict):
+                    result["issues"].append(f"Sample {i+1} has invalid metadata")
+                if "source" not in metadata:
+                    result["issues"].append(f"Sample {i+1} missing 'source' in metadata")
+                
+        except Exception as e:
+            logging.error(f"Error sampling embeddings: {str(e)}")
+            result["issues"].append(f"Error sampling embeddings: {str(e)}")
+        
+        cursor.close()
+        conn.close()
+        
+        # Overall assessment
+        if not result["issues"]:
+            if result["documents_with_embeddings"] < result["total_documents"]:
+                result["issues"].append(f"Only {result['documents_with_embeddings']} out of {result['total_documents']} documents have embeddings")
+            else:
+                result["status"] = "OK - No issues detected"
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error running vector search diagnostics: {str(e)}")
+        if conn and not conn.closed:
+            conn.close()
+        result["issues"].append(f"Diagnostic error: {str(e)}")
+        return result 

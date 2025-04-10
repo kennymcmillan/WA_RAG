@@ -11,7 +11,7 @@ Provides:
 
 import streamlit as st
 import logging
-from app_database import initialize_pgvector, save_document_to_db
+from app_database import initialize_pgvector, save_document_to_db, get_connection_string
 from app_embeddings import embeddings
 
 # Import PGVector for custom extension
@@ -99,24 +99,64 @@ class CustomPGVector(PGVector):
 
 # Create vector store using LangChain Documents
 def create_vector_store(documents, doc_name):
+    """
+    Creates a vector store using LangChain Documents.
+    Saves documents both to documents table and to langchain_pg_embedding
+    for proper vector search.
+    
+    Args:
+        documents: List of Document objects
+        doc_name: Name of the document
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
         # Initialize database if needed
         if not initialize_pgvector():
+            logging.error("Failed to initialize PGVector database")
             return None
 
-        # Extract content and metadata from documents
+        logging.info(f"Creating vector store for {doc_name} with {len(documents)} chunks")
+        
+        # Save to our documents table for regular SQL operations
+        # Extract content and metadata
         chunks = [doc.page_content for doc in documents]
-        metadata_list = [doc.metadata for doc in documents] # Metadata is already prepared
+        metadata_list = [doc.metadata for doc in documents]
 
         # Generate embeddings for chunks
         embeddings_list = embeddings.embed_documents(chunks)
 
-        # Save to database
-        if save_document_to_db(doc_name, chunks, embeddings_list, metadata_list):
+        # Save to documents table
+        if not save_document_to_db(doc_name, chunks, embeddings_list, metadata_list):
+            logging.error(f"Failed to save documents to documents table")
+            return None
+            
+        # Now also save to langchain_pg_embedding table using PGVector directly
+        try:
+            logging.info(f"Saving embeddings to langchain_pg_embedding table...")
+            connection_string = get_connection_string()
+            
+            if not connection_string:
+                logging.error("Could not get database connection string")
+                return None
+                
+            # Use our custom PGVector implementation
+            vector_store = CustomPGVector.from_documents(
+                documents=documents,
+                embedding=embeddings,
+                connection_string=connection_string,
+                collection_name="documents",  # Corresponds to table prefix
+                use_jsonb=True
+            )
+            
+            logging.info(f"Successfully created vector store and saved embeddings for {doc_name}")
             return True
-        return None
+        except Exception as e:
+            logging.error(f"Error saving to vector store: {str(e)}")
+            return None
     except Exception as e:
-        st.error(f"Error creating vector store for {doc_name}: {str(e)}")
+        logging.error(f"Error creating vector store for {doc_name}: {str(e)}")
         return None
 
 def iterative_document_search(question, vectorstore, max_iterations=5, initial_k=50, filter_dict=None):
@@ -132,16 +172,29 @@ def iterative_document_search(question, vectorstore, max_iterations=5, initial_k
                            Format should be: {"metadata": {"source": {"$eq": "document_name.pdf"}}}
         
     Returns:
-        list: List of relevant document chunks
+        DocumentCollection: Collection of relevant document chunks with metrics
     """
-    all_relevant_chunks = []
+    # Import DocumentCollection here to avoid circular imports
+    from app_rag import DocumentCollection
+    
+    # Initialize a DocumentCollection to store results
+    all_relevant_chunks = DocumentCollection()
     current_k = initial_k
     
     # Log filter information for debugging
     if filter_dict:
         logging.info(f"Searching with filter: {filter_dict}")
+        # Debug filter structure
+        if isinstance(filter_dict, dict) and "metadata" in filter_dict:
+            metadata_filter = filter_dict.get("metadata", {})
+            if isinstance(metadata_filter, dict):
+                for field, condition in metadata_filter.items():
+                    logging.info(f"Filter field: {field}, condition: {condition}")
     else:
         logging.warning("No filter provided for search - will retrieve from all documents")
+    
+    # Debug vectorstore
+    logging.info(f"Vector store type: {type(vectorstore).__name__}")
     
     # Try different search strategies
     search_strategies = [
@@ -151,6 +204,21 @@ def iterative_document_search(question, vectorstore, max_iterations=5, initial_k
     ]
     
     logging.info(f"Starting iterative search with question: '{question}'")
+    
+    # DEBUGGING: Try a direct unfiltered search first to verify vectorstore works at all
+    try:
+        logging.info("Attempting direct similarity search without filters (debug)")
+        direct_results = vectorstore.similarity_search(
+            question,
+            k=10
+        )
+        logging.info(f"Direct unfiltered search found {len(direct_results)} documents")
+        if direct_results and len(direct_results) > 0:
+            first_doc = direct_results[0]
+            logging.info(f"First unfiltered result sample: {first_doc.page_content[:100]}...")
+            logging.info(f"First unfiltered result metadata: {first_doc.metadata}")
+    except Exception as e:
+        logging.error(f"Direct unfiltered search failed: {str(e)}")
     
     for strategy_index, strategy in enumerate(search_strategies):
         strategy_name = strategy.get("search_type", "unknown")
@@ -184,11 +252,20 @@ def iterative_document_search(question, vectorstore, max_iterations=5, initial_k
                         first_doc = docs[0]
                         logging.info(f"First result sample: {first_doc.page_content[:100]}...")
                         logging.info(f"First result metadata: {first_doc.metadata}")
+                    else:
+                        logging.warning(f"Search returned empty results with filter {filter_dict}")
                     
                     # Add new chunks to our collection
                     new_chunks_added = 0
                     for doc in docs:
-                        if doc.page_content is not None and doc.page_content not in [chunk.page_content for chunk in all_relevant_chunks]:
+                        # Check if this is a unique document
+                        is_unique = True
+                        for existing_doc in all_relevant_chunks:
+                            if doc.page_content == existing_doc.page_content:
+                                is_unique = False
+                                break
+                        
+                        if doc.page_content is not None and is_unique:
                             all_relevant_chunks.append(doc)
                             new_chunks_added += 1
                     
@@ -229,11 +306,20 @@ def iterative_document_search(question, vectorstore, max_iterations=5, initial_k
                         first_doc = docs[0]
                         logging.info(f"First result sample: {first_doc.page_content[:100]}...")
                         logging.info(f"First result metadata: {first_doc.metadata}")
+                    else:
+                        logging.warning("Search returned empty results even without filter")
                     
                     # Add new chunks to our collection
                     new_chunks_added = 0
                     for doc in docs:
-                        if doc.page_content is not None and doc.page_content not in [chunk.page_content for chunk in all_relevant_chunks]:
+                        # Check if this is a unique document
+                        is_unique = True
+                        for existing_doc in all_relevant_chunks:
+                            if doc.page_content == existing_doc.page_content:
+                                is_unique = False
+                                break
+                        
+                        if doc.page_content is not None and is_unique:
                             all_relevant_chunks.append(doc)
                             new_chunks_added += 1
                     
@@ -253,4 +339,7 @@ def iterative_document_search(question, vectorstore, max_iterations=5, initial_k
                     # Try to continue with the next strategy instead of failing entirely
     
     logging.info(f"Iterative search completed. Found {len(all_relevant_chunks)} relevant chunks")
+    
+    # Update metrics - all are vector results
+    all_relevant_chunks.vector_count = len(all_relevant_chunks) 
     return all_relevant_chunks 

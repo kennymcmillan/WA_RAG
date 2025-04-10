@@ -42,7 +42,8 @@ from app_vector import create_vector_store, iterative_document_search, CustomPGV
 from app_dropbox import (get_dropbox_client, list_dropbox_folders,
                         list_dropbox_pdf_files, download_dropbox_file, create_file_like_object,
                         upload_to_dropbox)
-from app_search import direct_document_search, sql_keyword_search, check_document_exists
+from app_search import direct_document_search, sql_keyword_search, check_document_exists, diagnose_vector_search_issues
+from app_rag import hybrid_retriever, fetch_parent_context
 
 # --- New import for warnings ---
 import warnings
@@ -270,31 +271,18 @@ def main():
         else:
             st.error("Could not connect to Dropbox. Please check your credentials.")
         
-        # Admin section for database management
-        st.markdown("---")
-        st.markdown("### Admin")
-        
-        # Database management
-        with st.expander("Database Management"):
-            st.warning("⚠️ These operations affect all users and cannot be undone!")
+        # Admin section - hidden by default
+        with st.expander("Admin Controls", expanded=False):
+            st.markdown(f"<h3 style='color: {ASPIRE_MAROON};'>Database Administration</h3>", unsafe_allow_html=True)
+            st.warning("Warning: These actions can cause data loss and should be used with caution.")
             
             # Clear database button
             if st.button("Clear Document Database"):
                 try:
-                    # Connect to database
-                    db_name = os.getenv("DB_NAME")
-                    db_user = os.getenv("DB_USER")
-                    db_password = os.getenv("DB_PASSWORD")
-                    db_host = os.getenv("DB_HOST")
-                    db_port = os.getenv("DB_PORT")
-                    
-                    conn = psycopg2.connect(
-                        dbname=db_name,
-                        user=db_user,
-                        password=db_password,
-                        host=db_host,
-                        port=db_port
-                    )
+                    conn = get_db_connection()
+                    if not conn:
+                        st.error("Failed to connect to database")
+                        return
                     
                     # Get count before deletion
                     cursor = conn.cursor()
@@ -317,10 +305,91 @@ def main():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error clearing database: {str(e)}")
-        
-        # Reset chat button
-        if st.button("Reset Chat"):
-            st.session_state.messages = []
+            
+            # Initialize pgvector button 
+            st.markdown("### Vector Search Setup")
+            st.info("Use this to initialize or repair pgvector extension and tables")
+            if st.button("Initialize PGVector Tables"):
+                try:
+                    from app_database import initialize_pgvector, check_pgvector_extension
+                    
+                    # First check the current status
+                    pgvector_status = check_pgvector_extension()
+                    if pgvector_status:
+                        st.success("PGVector extension and tables are already set up correctly!")
+                    else:
+                        # Try to initialize
+                        result = initialize_pgvector()
+                        if result:
+                            st.success("Successfully initialized PGVector extension and tables!")
+                            st.info("You should now reprocess your documents to create embeddings")
+                        else:
+                            st.error("Failed to initialize PGVector. Check the logs for details.")
+                            st.info("Make sure the pgvector extension is installed on your PostgreSQL server")
+                except Exception as e:
+                    st.error(f"Error initializing PGVector: {str(e)}")
+            
+            # Complete Reset button (clear data + initialize tables)
+            st.markdown("### Complete Reset")
+            st.warning("⚠️ This will clear ALL document data and recreate tables")
+            if st.button("Complete Reset"):
+                try:
+                    # 1. Clear documents table
+                    conn = get_db_connection()
+                    if conn:
+                        try:
+                            cursor = conn.cursor()
+                            # Get count before deletion
+                            cursor.execute("SELECT COUNT(*) FROM documents;")
+                            docs_count = cursor.fetchone()[0]
+                            
+                            # Get count from langchain_pg_embedding if exists
+                            embeddings_count = 0
+                            try:
+                                cursor.execute("""
+                                    SELECT COUNT(*) FROM langchain_pg_embedding;
+                                """)
+                                embeddings_count = cursor.fetchone()[0]
+                            except:
+                                pass  # Table might not exist yet
+                            
+                            # Clear tables
+                            cursor.execute("DELETE FROM documents;")
+                            
+                            # Try to delete from langchain_pg_embedding if it exists
+                            try:
+                                cursor.execute("DELETE FROM langchain_pg_embedding;")
+                            except:
+                                pass  # Table might not exist yet
+                            
+                            conn.commit()
+                            cursor.close()
+                            conn.close()
+                            
+                            st.info(f"Cleared {docs_count} documents and {embeddings_count} embeddings")
+                        except Exception as e:
+                            st.error(f"Error clearing tables: {str(e)}")
+                            if conn and not conn.closed:
+                                conn.close()
+                    
+                    # 2. Initialize tables
+                    from app_database import initialize_pgvector
+                    result = initialize_pgvector()
+                    if result:
+                        st.success("Successfully reset database and initialized tables!")
+                        # Update session state
+                        st.session_state.processed_docs = {}
+                        st.session_state.selected_docs = []
+                        st.info("You can now upload and process your documents")
+                        st.rerun()
+                    else:
+                        st.error("Tables initialization failed. Check the logs for details.")
+                except Exception as e:
+                    st.error(f"Error performing complete reset: {str(e)}")
+            
+            # Reset chat button
+            if st.button("Reset Chat"):
+                st.session_state.messages = []
     
     # Main content
     tab1, tab2 = st.tabs(["Chat", "PDF Viewer"])
@@ -377,37 +446,44 @@ def main():
                     logging.info(f"Selected documents for search: {st.session_state.selected_docs}")
                     
                     # Initialize results containers
-                    raw_vector_docs = []  # For vector search results
-                    raw_sql_docs = []     # For SQL search results
+                    raw_retrieved_docs = []
                     selected_doc = st.session_state.selected_docs[0] if st.session_state.selected_docs else None
                     
-                    # IMPROVED SEARCH APPROACH:
-                    # First, determine which search to prioritize based on configuration
-                    if PRIORITIZE_SQL_SEARCH:
-                        # 1. Try SQL search first (more reliable with correct document filtering)
-                        logging.info("--- Starting SQL search (prioritized) ---")
-                        try:
-                            raw_sql_docs = direct_document_search(user_question, doc_name=selected_doc, limit=50)
-                            logging.info(f"SQL search returned {len(raw_sql_docs)} results")
-                        except Exception as e:
-                            logging.error(f"SQL search failed: {str(e)}")
-                            raw_sql_docs = []
+                    # Use our hybrid retriever that combines SQL and vector search
+                    logging.info(f"Using hybrid retriever for '{user_question}' in {selected_doc}")
+                    raw_retrieved_docs = hybrid_retriever(user_question, vector_store, selected_doc, limit=50)
+                    logging.info(f"Hybrid retriever found {len(raw_retrieved_docs)} documents")
                     
-                    # Combine results
-                    raw_retrieved_docs = raw_sql_docs.copy()
-                    logging.info(f"Combined search results: {len(raw_retrieved_docs)} chunks total")
+                    # Enhance results with parent context
+                    if raw_retrieved_docs:
+                        raw_retrieved_docs = fetch_parent_context(raw_retrieved_docs, selected_doc)
+                        logging.info(f"After fetching parent context: {len(raw_retrieved_docs)} documents")
                     
                     # Show debug info in UI if enabled
                     with st.expander("Debug Information", expanded=True):
                         st.write("### Query Analysis")
                         st.write(f"Query: '{user_question}'")
                         st.write(f"Selected document: {st.session_state.selected_docs[0] if st.session_state.selected_docs else 'None'}")
-                        st.write(f"Search priority: {'SQL first' if PRIORITIZE_SQL_SEARCH else 'Vector first'}")
-                        st.write(f"Vector search results: {len(raw_vector_docs)} chunks")
-                        st.write(f"SQL search results: {len(raw_sql_docs)} chunks")
-                        st.write(f"Combined results: {len(raw_retrieved_docs)} chunks")
                         
-                        # Add detailed database check
+                        # Add more detailed breakdown of results
+                        st.write("### Search Results")
+                        # Add these lines to track metrics from the hybrid retriever
+                        sql_count = getattr(raw_retrieved_docs, 'sql_count', 0)
+                        vector_count = getattr(raw_retrieved_docs, 'vector_count', 0)
+                        fallback_count = getattr(raw_retrieved_docs, 'fallback_count', 0)
+                        
+                        st.write(f"Hybrid search found: {len(raw_retrieved_docs)} chunks total")
+                        st.write(f"- SQL search found: {sql_count} chunks")
+                        st.write(f"- Vector search found: {vector_count} chunks")
+                        if fallback_count > 0:
+                            st.write(f"- Emergency fallback used: {fallback_count} chunks")
+                        
+                        # If there are parent documents, show that info
+                        parent_count = getattr(raw_retrieved_docs, 'parent_count', 0)
+                        if parent_count > 0:
+                            st.write(f"- Added {parent_count} parent documents for context")
+                            
+                        # Database Contents Check section
                         st.write("### Database Contents Check")
                         doc_check = check_document_exists(selected_doc)
                         if "error" not in doc_check:
@@ -425,66 +501,53 @@ def main():
                                     st.error(f"Document '{selected_doc}' NOT FOUND in database!")
                         else:
                             st.error(f"Error checking database: {doc_check['error']}")
+                            
+                        # Vector Search Diagnostics section
+                        st.write("### Vector Search Diagnostics")
+                        try:
+                            diagnostics = diagnose_vector_search_issues(selected_doc)
+                            
+                            # Show summary statistics
+                            st.write(f"Total documents: {diagnostics['total_documents']}")
+                            st.write(f"Documents with embeddings: {diagnostics['documents_with_embeddings']}")
+                            
+                            # Document-specific information
+                            if selected_doc and 'doc_count' in diagnostics:
+                                st.write(f"Selected document '{selected_doc}':")
+                                st.write(f"- Document chunks: {diagnostics['doc_count']}")
+                                st.write(f"- Chunks with embeddings: {diagnostics.get('doc_embedding_count', 0)}")
+                            
+                            # Show embedding samples
+                            if diagnostics['embedding_samples']:
+                                with st.expander("Embedding Samples"):
+                                    for i, sample in enumerate(diagnostics['embedding_samples']):
+                                        st.write(f"Sample {i+1}:")
+                                        st.write(f"- Has embedding: {sample['has_embedding']}")
+                                        st.write(f"- Embedding dimensions: {sample['embedding_dimensions']}")
+                                        st.write(f"- Content: {sample['content_preview']}")
+                                        st.write(f"- Metadata: {sample['metadata']}")
+                                        st.write("---")
+                            
+                            # Show issues if any
+                            if diagnostics['issues']:
+                                st.error("Issues detected:")
+                                for issue in diagnostics['issues']:
+                                    st.write(f"- {issue}")
+                            elif 'status' in diagnostics:
+                                st.success(diagnostics['status'])
+                        except Exception as e:
+                            st.error(f"Error running vector diagnostics: {str(e)}")
                     
-                    # IMPROVED FILTERING:
-                    # Filter results to match only the selected document
+                    # Use the retrieved documents directly
                     if st.session_state.selected_docs and raw_retrieved_docs:
-                        selected_doc = st.session_state.selected_docs[0]
-                        
-                        # First, try exact match on 'source' field
-                        retrieved_docs = [
-                            doc for doc in raw_retrieved_docs 
-                            if doc.metadata.get('source') == selected_doc
-                        ]
-                        
-                        logging.info(f"After exact source matching: found {len(retrieved_docs)} chunks")
-                        
-                        # If no results, try with doc_name field
-                        if not retrieved_docs:
-                            retrieved_docs = [
-                                doc for doc in raw_retrieved_docs 
-                                if doc.metadata.get('doc_name') == selected_doc
-                            ]
-                            logging.info(f"After doc_name matching: found {len(retrieved_docs)} chunks")
-                        
-                        # If still no results, try case-insensitive matching
-                        if not retrieved_docs:
-                            retrieved_docs = [
-                                doc for doc in raw_retrieved_docs 
-                                if (doc.metadata.get('source', '').lower() == selected_doc.lower()) or
-                                   (doc.metadata.get('doc_name', '').lower() == selected_doc.lower())
-                            ]
-                            logging.info(f"After case-insensitive matching: found {len(retrieved_docs)} chunks")
-                        
-                        # If still no results, try string contains matching
-                        if not retrieved_docs:
-                            # Extract base name without extension for more flexible matching
-                            base_name = selected_doc
-                            if '.' in base_name:
-                                base_name = base_name.split('.')[0]
-                            
-                            retrieved_docs = [
-                                doc for doc in raw_retrieved_docs 
-                                if (base_name.lower() in str(doc.metadata).lower())
-                            ]
-                            logging.info(f"After contains matching: found {len(retrieved_docs)} chunks")
-                            
-                        # If we have results after any matching approach, log what worked
-                        if retrieved_docs:
-                            # Show the matching approach that worked
-                            st.success(f"Found {len(retrieved_docs)} matching chunks using flexible document matching")
-                        else:
-                            st.warning(f"No matching chunks found for '{selected_doc}' after all matching attempts")
-                            
-                            # Last resort - use all results if we have them
-                            if raw_retrieved_docs:
-                                st.info("Using all search results as a last resort")
-                                retrieved_docs = raw_retrieved_docs
-                    else:
                         retrieved_docs = raw_retrieved_docs
+                        logging.info(f"Using {len(retrieved_docs)} chunks from hybrid retriever")
+                    else:
+                        retrieved_docs = []
+                        logging.warning("No documents retrieved")
                         
                     logging.info("--- After filtering ---")
-                    logging.info(f"Final filtered results: {len(retrieved_docs)} chunks.")
+                    logging.info(f"Final results: {len(retrieved_docs)} chunks.")
                 
                     # Generate answer only if we have relevant chunks
                     if not retrieved_docs:

@@ -70,10 +70,20 @@ def test_search(query, document_name=None):
         logging.info(f"Searching for: '{query}'")
         raw_retrieved_docs = iterative_document_search(query, vector_store, max_iterations=2, initial_k=10)
         
-        if not raw_retrieved_docs:
+        if not raw_retrieved_docs or len(raw_retrieved_docs) == 0:
             return False, "No results found"
         
         logging.info(f"Search returned {len(raw_retrieved_docs)} results")
+        
+        # Log metrics from DocumentCollection
+        vector_count = getattr(raw_retrieved_docs, 'vector_count', 0)
+        sql_count = getattr(raw_retrieved_docs, 'sql_count', 0)
+        fallback_count = getattr(raw_retrieved_docs, 'fallback_count', 0)
+        
+        logging.info(f"Vector search found: {vector_count} chunks")
+        logging.info(f"SQL search found: {sql_count} chunks")
+        if fallback_count > 0:
+            logging.info(f"Emergency fallback used: {fallback_count} chunks")
         
         # If a document name is provided, filter results
         if document_name:
@@ -101,15 +111,21 @@ def test_search(query, document_name=None):
                 ]
                 logging.info(f"After contains matching: found {len(filtered_docs)} results")
             
-            # Use filtered results
-            results = filtered_docs
+            # Use filtered results - create a new DocumentCollection with the filtered docs
+            from app_rag import DocumentCollection
+            results = DocumentCollection(filtered_docs)
+            
+            # Preserve the metrics from the original collection
+            results.vector_count = raw_retrieved_docs.vector_count
+            results.sql_count = raw_retrieved_docs.sql_count
+            results.fallback_count = raw_retrieved_docs.fallback_count
         else:
             # Use all results
             results = raw_retrieved_docs
         
         # Print first 3 results
         logging.info("First 3 results:")
-        for i, doc in enumerate(results[:3]):
+        for i, doc in enumerate(list(results)[:3]):
             logging.info(f"Result {i+1}:")
             logging.info(f"Content: {doc.page_content[:100]}...")
             logging.info(f"Metadata: {doc.metadata}")
@@ -163,8 +179,20 @@ def main():
     
     # Print results
     print(f"\nFound {len(results)} results")
+    
+    # Display DocumentCollection metrics
+    vector_count = getattr(results, 'vector_count', 0)
+    sql_count = getattr(results, 'sql_count', 0)
+    fallback_count = getattr(results, 'fallback_count', 0)
+    
+    print(f"Vector search found: {vector_count} chunks")
+    print(f"SQL search found: {sql_count} chunks")
+    if fallback_count > 0:
+        print(f"Emergency fallback used: {fallback_count} chunks")
+    
     print("\nFirst 3 results:")
-    for i, doc in enumerate(results[:3]):
+    result_list = list(results)
+    for i, doc in enumerate(result_list[:3]):
         print(f"Result {i+1}:")
         print(f"Content: {doc.page_content[:100]}...")
         print(f"Source: {doc.metadata.get('source', 'Unknown')}")

@@ -197,29 +197,41 @@ def process_pdf_file(file, save_to_dropbox=False):
         
         logging.info(f"Extracted {len(pages_data)} pages from {file.name}")
         
-        # Use advanced RAG with parent-child document approach
-        result = implement_parent_document_retriever(pages_data, file.name)
+        # Create document chunks with the default chunking strategy
+        documents = get_text_chunks(pages_data)
+        
+        if not documents:
+            logging.error(f"Failed to create text chunks from {file.name}")
+            return False
+            
+        logging.info(f"Created {len(documents)} chunks from {file.name}")
+        
+        # Process documents with Parent Document Retriever pattern
+        success = implement_parent_document_retriever(documents, file.name)
+        
+        if not success:
+            logging.error(f"Failed to implement Parent Document Retriever for {file.name}")
+            # Fall back to traditional vector store creation
+            if not create_vector_store(documents, file.name):
+                logging.error(f"Failed to create vector store for {file.name}")
+                return False
         
         # Save to Dropbox if requested
-        if save_to_dropbox and result:
+        if save_to_dropbox and is_dropbox_configured():
             try:
                 # Reset file pointer to beginning
                 file.seek(0)
-                file_bytes = file.read()
                 
-                # Get Dropbox client
-                dbx = get_dropbox_client()
-                if dbx:
-                    upload_result = upload_to_dropbox(file_bytes, file.name, "/", dbx)
-                    if upload_result:
-                        logging.info(f"Successfully uploaded {file.name} to Dropbox")
-                    else:
-                        logging.error(f"Failed to upload {file.name} to Dropbox")
+                # Save to Dropbox
+                dropbox_path = f"/{file.name}"  # Root folder
+                save_file_to_dropbox(file, dropbox_path)
+                logging.info(f"Saved {file.name} to Dropbox")
             except Exception as e:
-                logging.error(f"Error uploading to Dropbox: {str(e)}")
+                logging.error(f"Error saving to Dropbox: {str(e)}")
+                # Don't fail the whole process if just Dropbox save fails
         
-        return result
-        
+        logging.info(f"Successfully processed {file.name}")
+        return True
     except Exception as e:
-        logging.error(f"Error processing PDF file: {str(e)}")
+        logging.error(f"Error processing file {file.name}: {str(e)}")
         return False

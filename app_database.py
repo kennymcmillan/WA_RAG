@@ -51,43 +51,159 @@ def get_db_connection():
         st.error(f"Error connecting to database: {str(e)}")
         return None
 
-def initialize_pgvector():
-    conn = get_db_connection()
-    if not conn:
-        return False
-
+def check_pgvector_extension():
+    """Check if pgvector extension is installed in the database"""
+    conn = None
     try:
-        with conn.cursor() as cur:
-            # Enable pgvector extension if not already enabled
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        # Get connection
+        conn = get_db_connection()
+        if not conn:
+            logging.error("Failed to connect to database to check pgvector")
+            return False
+        
+        # Check if pgvector extension exists
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) FROM pg_extension WHERE extname = 'vector';
+        """)
+        result = cursor.fetchone()[0]
+        
+        # Check result
+        if result > 0:
+            logging.info("pgvector extension is installed")
+            
+            # Also check for langchain_pg_embedding table
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'langchain_pg_embedding'
+                );
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if table_exists:
+                logging.info("langchain_pg_embedding table exists")
+                return True
+            else:
+                logging.error("pgvector extension is installed but langchain_pg_embedding table is missing")
+                return False
+        else:
+            logging.error("pgvector extension is NOT installed")
+            return False
+    except Exception as e:
+        logging.error(f"Error checking pgvector extension: {str(e)}")
+        return False
+    finally:
+        if conn:
+            conn.close()
 
-            # Create documents table if not exists
-            cur.execute("""
+def initialize_pgvector():
+    """
+    Initialize the database with pgvector extension and required tables.
+    More forceful implementation that will attempt to create the extension
+    and tables if they don't exist.
+    """
+    conn = None
+    try:
+        # First check existing connection
+        conn = get_db_connection()
+        if not conn:
+            logging.error("Failed to connect to database for initialization")
+            return False
+        
+        cursor = conn.cursor()
+        
+        # Step 1: Create pgvector extension if it doesn't exist
+        logging.info("Checking for pgvector extension...")
+        try:
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            conn.commit()
+            logging.info("pgvector extension created or already exists")
+        except Exception as e:
+            logging.error(f"Failed to create pgvector extension: {str(e)}")
+            logging.warning("You may need to install pgvector extension on your PostgreSQL server")
+            return False
+        
+        # Step 2: Check if documents table exists and has proper structure
+        logging.info("Setting up documents table...")
+        try:
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id SERIAL PRIMARY KEY,
                     doc_name TEXT NOT NULL,
                     page_number INTEGER,
                     content TEXT NOT NULL,
-                    embedding vector(384),
+                    embedding vector(1536),
                     metadata JSONB
                 );
             """)
-
-            # Create index for similarity search
-            cur.execute("""
+            
+            # Create index for documents table
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS documents_embedding_idx
                 ON documents
                 USING ivfflat (embedding vector_cosine_ops)
                 WITH (lists = 100);
             """)
-
+            
             conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"Error initializing database: {str(e)}")
-        return False
-    finally:
+            logging.info("Documents table created or verified")
+        except Exception as e:
+            logging.error(f"Error setting up documents table: {str(e)}")
+        
+        # Step 3: Check if langchain_pg_embedding table exists
+        logging.info("Checking for langchain_pg_embedding table...")
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'langchain_pg_embedding'
+            );
+        """)
+        table_exists = cursor.fetchone()[0]
+        
+        # Step 4: If table doesn't exist, create it manually
+        if not table_exists:
+            logging.info("Creating langchain_pg_embedding table...")
+            try:
+                # Create the table with required structure for PGVector
+                cursor.execute("""
+                    CREATE TABLE langchain_pg_embedding (
+                        uuid UUID PRIMARY KEY,
+                        cmetadata JSONB,
+                        document TEXT,
+                        embedding VECTOR(1536)
+                    );
+                """)
+                
+                # Create index for faster similarity search
+                cursor.execute("""
+                    CREATE INDEX ON langchain_pg_embedding USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+                """)
+                
+                conn.commit()
+                logging.info("Successfully created langchain_pg_embedding table and index")
+            except Exception as e:
+                logging.error(f"Failed to create langchain_pg_embedding table: {str(e)}")
+                return False
+        else:
+            logging.info("langchain_pg_embedding table already exists")
+        
+        cursor.close()
         conn.close()
+        
+        # Verify if everything is properly set up
+        if check_pgvector_extension():
+            logging.info("pgvector setup complete and verified")
+            return True
+        else:
+            logging.error("pgvector setup could not be verified")
+            return False
+        
+    except Exception as e:
+        logging.error(f"Error initializing pgvector: {str(e)}")
+        if conn and not conn.closed:
+            conn.close()
+        return False
 
 def save_document_to_db(doc_name, chunks, embeddings, metadata_list):
     conn = get_db_connection()
