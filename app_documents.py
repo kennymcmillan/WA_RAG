@@ -17,9 +17,15 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import time
+import json
+import tempfile
 from app_vector import create_vector_store
 from app_dropbox import save_file_to_dropbox, is_dropbox_configured
 from app_rag import implement_parent_document_retriever
+
+# Add table extraction imports
+import tabula
+import pandas as pd
 
 # Aspire Academy colors
 ASPIRE_MAROON = "#7A0019"
@@ -60,25 +66,116 @@ def aspire_academy_css():
     """
     return aspire_css
 
-# Get PDF text and metadata - Refactored
-def get_pdf_pages(pdf_docs):
+# Get PDF text and metadata - Enhanced with table extraction
+def get_pdf_pages(pdf_docs, extract_tables=True):
     pages_data = []
     for pdf in pdf_docs:
         doc_name = pdf.name
         try:
+            # Create a temporary file to use with tabula if we need to extract tables
+            tmp_file = None
+            tmp_file_path = None
+            
+            if extract_tables:
+                try:
+                    # Create a temporary file for tabula to process
+                    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+                    tmp_file_path = tmp_file.name
+                    
+                    # Write the uploaded PDF to the temporary file
+                    pdf.seek(0)
+                    tmp_file.write(pdf.read())
+                    tmp_file.close()
+                    logging.info(f"Created temporary file for table extraction: {tmp_file_path}")
+                except Exception as e:
+                    logging.warning(f"Failed to create temporary file for table extraction: {str(e)}")
+                    extract_tables = False
+            
+            # Reset file pointer for PyPDF2 to read
+            pdf.seek(0)
             pdf_reader = PdfReader(pdf)
+            
             for page_num, page in enumerate(pdf_reader.pages):
                 page_text = page.extract_text()
-                if page_text:  # Only add non-empty pages
+                tables_data = []
+                
+                # Extract tables from the page if enabled
+                if extract_tables and tmp_file_path:
+                    try:
+                        # Extract tables from the current page
+                        page_tables = tabula.read_pdf(
+                            tmp_file_path, 
+                            pages=page_num+1,  # tabula uses 1-indexed pages
+                            multiple_tables=True
+                        )
+                        
+                        if page_tables:
+                            logging.info(f"Found {len(page_tables)} tables on page {page_num+1} of {doc_name}")
+                            
+                            # Process each table
+                            for i, table in enumerate(page_tables):
+                                if not table.empty:
+                                    # Convert table to various formats for flexible usage
+                                    table_str = table.to_string(index=False)
+                                    
+                                    # Handle NaN values in the table data by converting to None (null in JSON)
+                                    table_dict = table.replace({float('nan'): None}).to_dict(orient='records')
+                                    
+                                    # Clean up table HTML - replace NaN with empty strings
+                                    table_html = table.fillna('').to_html(index=False)
+                                    
+                                    # Create a formatted string representation of the table
+                                    table_text = f"\n[TABLE {i+1}]\n{table_str}\n[/TABLE {i+1}]\n"
+                                    
+                                    # Add table to the list of tables for this page
+                                    tables_data.append({
+                                        "table_id": i+1,
+                                        "table_data": table_dict,
+                                        "table_html": table_html,
+                                        "table_text": table_text
+                                    })
+                                    
+                                    # Append the table text to the page text for unified search
+                                    page_text = f"{page_text}\n{table_text}"
+                    except Exception as e:
+                        logging.warning(f"Table extraction failed for page {page_num+1} of {doc_name}: {str(e)}")
+                
+                # Only add non-empty pages
+                if page_text:  
                     # Clean up the text
                     page_text = re.sub(r'\s+', ' ', page_text)  # Normalize whitespace
                     page_text = page_text.strip()
+                    
+                    # Create metadata with table info if tables were found
+                    metadata = {
+                        "source": doc_name, 
+                        "page": page_num + 1
+                    }
+                    
+                    if tables_data:
+                        metadata["has_tables"] = True
+                        metadata["tables_count"] = len(tables_data)
+                        metadata["tables"] = tables_data
+                    else:
+                        metadata["has_tables"] = False
+                    
                     pages_data.append({
                         "text": page_text,
-                        "metadata": {"source": doc_name, "page": page_num + 1}
+                        "metadata": metadata
                     })
+            
+            # Clean up temporary file if we created one
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                try:
+                    os.unlink(tmp_file_path)
+                    logging.info(f"Removed temporary file: {tmp_file_path}")
+                except Exception as e:
+                    logging.warning(f"Failed to remove temporary file {tmp_file_path}: {str(e)}")
+                    
         except Exception as e:
             st.error(f"Error processing {doc_name}: {str(e)}")
+            logging.error(f"Error processing {doc_name}: {str(e)}", exc_info=True)
+    
     return pages_data
 
 # Process PDFs in parallel for better performance

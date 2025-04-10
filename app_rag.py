@@ -11,10 +11,11 @@ Based on: https://pub.towardsai.net/introduction-to-retrieval-augmented-generati
 import logging
 import os
 import streamlit as st
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, Tuple
 import psycopg2
 from sqlalchemy import text
 from langchain_core.documents import Document
+from langchain_core.documents import Document as LangchainDocument
 from app_embeddings import embeddings
 from app_database import get_db_connection, get_connection_string
 from app_vector import CustomPGVector
@@ -22,6 +23,8 @@ from langchain_community.vectorstores import FAISS
 from langchain.retrievers import ParentDocumentRetriever
 from langchain.storage import InMemoryStore
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+import json
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,47 +35,33 @@ PARENT_CHUNK_SIZE = 2000  # Larger chunks for context
 CHILD_CHUNK_SIZE = 400    # Smaller chunks for precise retrieval
 CHUNK_OVERLAP = 50        # Overlap to maintain context between chunks
 
-# Add this class near the top of the file, after imports
-class DocumentCollection:
-    """
-    A class to hold documents and track search metrics.
-    """
-    def __init__(self, documents=None):
-        self.documents = documents or []
+# Custom document collection class with metrics tracking
+class DocumentCollection(list):
+    """Extended list class for Document objects with metrics tracking"""
+    
+    def __init__(self, docs=None):
+        super().__init__(docs or [])
         self.sql_count = 0
         self.vector_count = 0
+        self.table_count = 0
         self.fallback_count = 0
-        self.parent_count = 0
+        self.metrics = {}
     
-    def __len__(self):
-        return len(self.documents)
+    def get_metrics(self):
+        """Get standardized metrics dictionary"""
+        return {
+            "sql_results": self.sql_count,
+            "vector_results": self.vector_count, 
+            "table_results": self.table_count,
+            "fallback_results": self.fallback_count,
+            "total_results": len(self),
+            **self.metrics
+        }
     
-    def __getitem__(self, idx):
-        if isinstance(idx, slice):
-            result = DocumentCollection(self.documents[idx])
-            result.sql_count = self.sql_count
-            result.vector_count = self.vector_count
-            result.fallback_count = self.fallback_count
-            result.parent_count = self.parent_count
-            return result
-        return self.documents[idx]
-    
-    def __iter__(self):
-        return iter(self.documents)
-    
-    def append(self, item):
-        self.documents.append(item)
-    
-    def extend(self, items):
-        self.documents.extend(items)
-    
-    def copy(self):
-        result = DocumentCollection(self.documents.copy())
-        result.sql_count = self.sql_count
-        result.vector_count = self.vector_count
-        result.fallback_count = self.fallback_count
-        result.parent_count = self.parent_count
-        return result
+    def set_metric(self, key, value):
+        """Set a custom metric"""
+        self.metrics[key] = value
+        return self
 
 def implement_parent_document_retriever(documents: List[Document], doc_name: str) -> bool:
     """
@@ -400,6 +389,13 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
         logger.warning("No document name provided to hybrid_retriever")
         return DocumentCollection()
     
+    # Check if query may be table-oriented
+    table_words = ['table', 'row', 'column', 'data', 'stats', 'statistics', 'numbers', 
+                  'values', 'compare', 'percentage', 'average', 'maximum', 'minimum']
+    table_oriented = any(word in query.lower() for word in table_words)
+    if table_oriented:
+        logger.info(f"Query appears to be table-oriented: '{query}'")
+    
     # Try both search methods in parallel for better results
     sql_results = []
     vector_results = []
@@ -408,7 +404,22 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
     # Natural language SQL search for semantically relevant results
     try:
         logger.info("Running natural language SQL search...")
-        sql_results = natural_language_sql_search(query, doc_name, limit=limit)
+        
+        # If query is table-oriented, use table-specific search with boosting
+        if table_oriented:
+            logger.info("Using table-boosted search for data query...")
+            from app_search import sql_keyword_search
+            sql_results = sql_keyword_search(
+                query, 
+                doc_name=doc_name, 
+                include_tables=True,
+                table_boost=5.0,  # Higher boost for table data
+                limit=limit
+            )
+        else:
+            # Regular search for non-table queries
+            sql_results = natural_language_sql_search(query, doc_name, limit=limit)
+        
         logger.info(f"Natural language SQL search found {len(sql_results)} results")
         
         # If natural language SQL search fails, try simple SQL search as fallback
@@ -447,9 +458,75 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
     except Exception as e:
         logger.error(f"Vector search failed: {str(e)}")
     
-    # Emergency fallback if both methods fail
-    if len(sql_results) == 0 and len(vector_results) == 0:
-        logger.warning("No results from either method, using emergency fallback...")
+    # If query is table-oriented, try specific table search
+    if table_oriented:
+        try:
+            logger.info("Running table-specific search...")
+            # Use a database query targeting specifically table-containing chunks
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                table_sql = """
+                    SELECT id, doc_name, page_number, content, metadata
+                    FROM documents 
+                    WHERE doc_name = %s
+                    AND (
+                        metadata->>'has_tables' = 'true' 
+                        OR metadata->>'contains_table' = 'true'
+                        OR content LIKE '%[TABLE%'
+                    )
+                    LIMIT %s;
+                """
+                cursor.execute(table_sql, (doc_name, limit))
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    if row and len(row) >= 4 and row[3]:
+                        # Extract fields safely
+                        row_id = row[0] if len(row) > 0 else 0
+                        row_doc_name = row[1] if len(row) > 1 else doc_name
+                        page_num = row[2] if len(row) > 2 else 0
+                        content = row[3]
+                        metadata_raw = row[4] if len(row) > 4 else None
+                        
+                        # Parse metadata
+                        if metadata_raw:
+                            try:
+                                if isinstance(metadata_raw, str):
+                                    metadata = json.loads(metadata_raw)
+                                else:
+                                    metadata = metadata_raw
+                            except:
+                                metadata = {"source": row_doc_name, "page": page_num}
+                        else:
+                            metadata = {"source": row_doc_name, "page": page_num}
+                        
+                        # Ensure source and page are present
+                        if "source" not in metadata:
+                            metadata["source"] = row_doc_name
+                        if "page" not in metadata:
+                            metadata["page"] = page_num
+                            
+                        # Flag as coming from table search
+                        metadata["from_table_search"] = True
+                        
+                        # Add document
+                        sql_results.append(Document(
+                            page_content=content,
+                            metadata=metadata
+                        ))
+                
+                cursor.close()
+                conn.close()
+                logger.info(f"Table-specific search found {len(sql_results)} results")
+            else:
+                logger.error("Failed to connect to database for table search")
+        except Exception as e:
+            logger.error(f"Table-specific search failed: {str(e)}")
+    
+    # Emergency fallback if all methods fail
+    if len(sql_results) == 0 and len(vector_results) == 0 and len(sql_results) == 0:
+        logger.warning("No results from any method, using emergency fallback...")
         try:
             # Emergency fallback - just get some documents from this doc
             conn = get_db_connection()
@@ -496,13 +573,20 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
     result_collection = DocumentCollection()
     seen_contents = set()
     
-    # First add all SQL results
+    # First add table results if query is table-oriented (prioritize tables)
+    if table_oriented:
+        for doc in sql_results:
+            if doc.page_content and doc.page_content not in seen_contents:
+                result_collection.append(doc)
+                seen_contents.add(doc.page_content)
+    
+    # Then add SQL results
     for doc in sql_results:
         if doc.page_content and doc.page_content not in seen_contents:
             result_collection.append(doc)
             seen_contents.add(doc.page_content)
     
-    # Then add vector results that aren't duplicates
+    # Finally add vector results that aren't duplicates
     for doc in vector_results:
         if doc.page_content and doc.page_content not in seen_contents:
             result_collection.append(doc)
@@ -511,10 +595,11 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
     # Track metrics
     result_collection.sql_count = len(sql_results)
     result_collection.vector_count = len(vector_results)
+    result_collection.table_count = len(sql_results) if table_oriented else 0
     result_collection.fallback_count = len(sql_results) if fallback_used else 0
     
     logger.info(f"Combined results before ranking: {len(result_collection)} chunks")
-    logger.info(f"Metrics - SQL: {result_collection.sql_count}, Vector: {result_collection.vector_count}, Fallback: {result_collection.fallback_count}")
+    logger.info(f"Metrics - SQL: {result_collection.sql_count}, Vector: {result_collection.vector_count}, Tables: {result_collection.table_count}, Fallback: {result_collection.fallback_count}")
     
     # If we have at least some results, rank them
     if len(result_collection) > 0:
@@ -527,6 +612,7 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
             ranked_collection = DocumentCollection(ranked_docs[:limit])
             ranked_collection.sql_count = result_collection.sql_count
             ranked_collection.vector_count = result_collection.vector_count
+            ranked_collection.table_count = result_collection.table_count
             ranked_collection.fallback_count = result_collection.fallback_count
             
             # Log top 3 documents for debugging
@@ -543,6 +629,56 @@ def hybrid_retriever(query: str, vector_store, doc_name: str, limit: int = 30) -
     else:
         # No results after combining
         return DocumentCollection()
+
+def is_table_oriented_query(query):
+    """
+    Analyze if a query is likely asking for tabular/structured data
+    
+    Args:
+        query (str): The user's query
+        
+    Returns:
+        bool: True if likely table-oriented, False otherwise
+    """
+    # List of keywords that suggest the query is looking for structured/tabular data
+    table_keywords = [
+        'table', 'tabular', 'row', 'column', 'cell',
+        'spreadsheet', 'excel', 'csv', 'tsv', 
+        'data', 'dataset', 'statistics', 'stats',
+        'numbers', 'figures', 'metrics', 'measurements',
+        'chart', 'graph', 'plot', 'diagram',
+        'compare', 'comparison', 'difference', 'similarities',
+        'highest', 'lowest', 'maximum', 'minimum', 'average', 'median',
+        'percentage', 'ratio', 'proportion', 'distribution',
+        'ranking', 'ranked', 'rank', 'list',
+        'how many', 'what percentage', 'values', 'numeric'
+    ]
+    
+    # Numerical pattern indicators
+    numeric_patterns = [
+        r'\d+(\.\d+)?%',  # Percentage pattern
+        r'\$\d+(\.\d+)?',  # Money pattern
+        r'\d{4}-\d{2}-\d{2}',  # Date pattern
+        r'\d+x\d+',  # Dimension pattern
+    ]
+    
+    # Check for table keywords
+    query_lower = query.lower()
+    for keyword in table_keywords:
+        if keyword in query_lower:
+            return True
+            
+    # Check for numeric patterns
+    for pattern in numeric_patterns:
+        if re.search(pattern, query):
+            return True
+    
+    # Check for comparison words with numbers
+    comparison_with_numbers = re.search(r'(compare|difference|between|vs|versus).*\d+', query_lower)
+    if comparison_with_numbers:
+        return True
+        
+    return False
 
 def rank_docs_by_relevance(docs, query):
     """

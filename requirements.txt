@@ -19,3 +19,5 @@ sqlalchemy>=2.0.27
 scikit-learn>=1.3.0
 numpy>=1.24.0
 langchain_huggingface
+tabula-py>=2.9.0
+pandas>=1.5.3

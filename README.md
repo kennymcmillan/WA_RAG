@@ -170,6 +170,14 @@ The system implements several advanced Retrieval-Augmented Generation techniques
    - Shows number of results from each retrieval method
    - Helps diagnose and optimize retrieval performance
 
+5. **Table Extraction and Processing**:
+   - Automatically detects and extracts tables from PDF documents
+   - Preserves table structure in document content and metadata
+   - Enhanced search that prioritizes tables for data-related queries
+   - Tables are specially marked in content with [TABLE X] tags
+   - Table content receives boosted relevance during search
+   - LLM receives special instructions when tables are present in results
+
 ### LLM Performance
 
 The application uses **DeepSeek R1 Distill Llama 70B** (free) through OpenRouter API. This model offers exceptional performance for document analysis and question answering:
@@ -208,6 +216,8 @@ The chunking system uses a nuanced set of text separators to maintain semantic b
 - **PDF Processing Errors**: Ensure PDFs are not corrupted and are text-based (not scanned images)
 - **Missing Dependencies**: If you encounter `scikit-learn` related errors, run `pip install scikit-learn numpy`
 - **Vector Search Issues**: Make sure the pgvector extension is properly installed in your PostgreSQL database
+- **Table Extraction Requirements**: For table extraction to work, you need Java Runtime Environment (JRE) installed as tabula-py depends on it. If you see "`Failed to import jpype dependencies`" warnings, install JRE or use the fallback subprocess mode.
+- **JSON Serialization Errors**: If you encounter "`invalid input syntax for type json`" errors with table data, check for NaN values in tables. The system should handle these automatically, but complex tables may require manual fixing.
 - **API Limits**: If you encounter rate limits with OpenRouter, consider upgrading your API tier
 
 ## Deployment to Streamlit Cloud

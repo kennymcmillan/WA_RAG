@@ -47,7 +47,31 @@ def get_answer(question, context, retrieved_docs=None):
             api_key=api_key
         )
         
+        # Check for table content in the retrieved documents
+        has_tables = False
+        table_info = []
+        if retrieved_docs:
+            for doc in retrieved_docs:
+                if doc.metadata.get('has_tables', False) or doc.metadata.get('contains_tables', False):
+                    has_tables = True
+                    # Extract table info from metadata if available
+                    if 'tables' in doc.metadata and isinstance(doc.metadata['tables'], list):
+                        table_info.extend(doc.metadata['tables'])
+        
         # Create better prompt with clear instructions and citation guidance
+        # Add special handling for tables if present
+        table_instructions = ""
+        if has_tables:
+            table_instructions = """
+            TABLE INSTRUCTIONS:
+            1. The context contains tables marked with [TABLE X] and [/TABLE X] tags.
+            2. Pay special attention to table content when answering numerical or data-related questions.
+            3. When citing information from tables, specify both the table number and the document source.
+            4. If relevant, describe the structure of the table (e.g., "Table 2 shows sales figures by quarter").
+            5. For numerical questions, prioritize precise values from tables rather than approximations from text.
+            6. Tables may contain the most accurate and up-to-date information, so prefer them for factual answers.
+            """
+        
         prompt_text = f"""
         I need you to answer a question based on the provided context information.
         
@@ -61,13 +85,14 @@ def get_answer(question, context, retrieved_docs=None):
         1. Only answer what you can based on the context above.
         2. If you don't know or the context doesn't contain the answer, say "I don't have enough information to answer that question."
         3. Keep your answer concise and directly address the question. Aim for 2-3 paragraphs maximum.
-        4. ALWAYS cite specific page numbers when referring to information from the context.
+        4. Always cite specific page numbers when referring to information from the context.
         5. Format your answer in clear, easy-to-read text.
         6. Do not include general knowledge not found in the context.
         7. Do not cite sources that weren't included in the context.
         8. Prioritize accuracy over comprehensiveness - it's better to provide a partial correct answer than to speculate.
         9. When appropriate, use bullet points or numbered lists to organize complex information.
         10. If there are numerical values or statistics in the context, include them precisely.
+        {table_instructions}
         """
         
         # Get response from OpenRouter using DeepSeek R1 Distill Llama 70B

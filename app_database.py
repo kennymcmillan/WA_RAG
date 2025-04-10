@@ -16,6 +16,21 @@ from psycopg2.extras import execute_values
 import streamlit as st
 import logging
 import json
+import math  # For NaN handling
+
+# Helper function to make data JSON-safe (handle NaN, Infinity, etc.)
+def make_json_safe(obj):
+    """
+    Convert an object to be JSON-safe, handling NaN, Infinity, and other values that don't serialize well
+    """
+    if isinstance(obj, dict):
+        return {k: make_json_safe(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [make_json_safe(i) for i in obj]
+    elif isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    else:
+        return obj
 
 def get_connection_string():
     # Get database credentials from environment variables
@@ -220,7 +235,10 @@ def save_document_to_db(doc_name, chunks, embeddings, metadata_list):
                 logging.info(f"Sample chunk: {chunks[0][:100]}...")
                 
             if metadata_list and len(metadata_list) > 0:
-                logging.info(f"Sample metadata: {metadata_list[0]}")
+                # Check if there are tables in the first metadata item
+                if metadata_list[0].get('has_tables', False):
+                    logging.info(f"Document contains tables. First page has {metadata_list[0].get('tables_count', 0)} tables.")
+                logging.info(f"Sample metadata: {str(metadata_list[0])[:200]}...")
             
             # Ensure metadata has the proper structure for JSONB querying
             # Metadata should have both 'source' and 'page' fields at a minimum
@@ -237,21 +255,44 @@ def save_document_to_db(doc_name, chunks, embeddings, metadata_list):
                 if 'page' not in validated_metadata:
                     validated_metadata['page'] = None
                 
+                # Handle table metadata - validate and clean tables data
+                if 'tables' in validated_metadata and isinstance(validated_metadata['tables'], list):
+                    # Ensure tables data is compact but complete by keeping essential fields
+                    for table in validated_metadata['tables']:
+                        # We can remove the full table_text from metadata as it's already in the content
+                        if 'table_text' in table:
+                            del table['table_text']
+                        
+                        # Keep table_data and a compact version of table_html
+                        # You could also remove table_html if space is a concern
+                
                 validated_metadata_list.append(validated_metadata)
                 
             # Log first validated metadata for debugging
             if validated_metadata_list:
-                logging.info(f"First validated metadata: {validated_metadata_list[0]}")
+                logging.info(f"First validated metadata sample: {str(validated_metadata_list[0])[:200]}...")
             
             # Prepare data for batch insert
             data = []
             for i, (chunk, embedding, metadata) in enumerate(zip(chunks, embeddings, validated_metadata_list)):
+                # Check if this chunk contains tables
+                has_tables = metadata.get('has_tables', False)
+                
+                # Add table-specific tags to the metadata for enhanced searching
+                if has_tables:
+                    # Add a tag to make searching for tables easier
+                    metadata['contains_table'] = True
+                    metadata['searchable_table'] = True
+                
+                # Make metadata JSON-safe
+                json_safe_metadata = make_json_safe(metadata)
+                
                 data.append((
                     doc_name,
-                    metadata.get('page', None), # Keep page number separate if desired, or remove if fully in metadata
+                    metadata.get('page', None),
                     chunk,
                     embedding,
-                    json.dumps(metadata) # Serialize metadata dict to JSON string
+                    json.dumps(json_safe_metadata) # Serialize metadata dict to JSON string
                 ))
 
             # Batch insert

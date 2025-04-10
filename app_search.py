@@ -217,139 +217,148 @@ def basic_document_search(doc_name=None, limit=5):
             conn.close()
         return []
 
-def sql_keyword_search(query, doc_name=None, limit=50):
+def sql_keyword_search(query, doc_name=None, include_tables=True, table_boost=2.0, limit=50):
     """
-    Perform a SQL-based keyword search for when vector search fails.
-    Enhanced to better handle names and phrases.
+    Perform a SQL-based keyword search.
     
     Args:
-        query (str): The search query
-        doc_name (str): Optional document name to filter by
+        query (str): Search query
+        doc_name (str, optional): Filter by document name
+        include_tables (bool): Whether to specially handle table data
+        table_boost (float): Boost factor for results containing tables
         limit (int): Maximum number of results to return
         
     Returns:
-        list: List of Document objects with search results
+        List[Document]: List of matching documents
     """
+    from app_database import get_db_connection
+    from langchain.schema import Document
+    
     conn = get_db_connection()
     if not conn:
-        logging.error("Failed to connect to database for SQL search")
         return []
     
     try:
-        # First, check if the document exists and log useful details
-        doc_check = check_document_exists(doc_name)
-        if "error" not in doc_check:
-            logging.info(f"Database has {doc_check['total_docs']} total document chunks")
-            logging.info(f"Available documents: {doc_check['doc_names']}")
-            
-            if doc_name and doc_check['specific_doc']:
-                if doc_check['specific_doc']['exists']:
-                    logging.info(f"Document '{doc_name}' exists with {doc_check['specific_doc']['chunk_count']} chunks")
-                    logging.info(f"Sample content: {doc_check['specific_doc']['sample_content']}")
-                    logging.info(f"Sample metadata: {doc_check['specific_doc']['sample_metadata']}")
-                else:
-                    logging.warning(f"Document '{doc_name}' NOT FOUND in database!")
-        
-        # Check table structure for debugging
-        table_info = inspect_table_structure()
-        
         cursor = conn.cursor()
         
-        # Split query into keywords
-        keywords = query.lower().split()
+        # Create a safe version of the query for SQL ILIKE
+        safe_query = query.replace("%", "\\%").replace("_", "\\_")
+        terms = [term.strip() for term in safe_query.split() if term.strip()]
         
-        # Check if this looks like a name search (e.g., "Brian Moore")
-        is_name_search = len(keywords) >= 2 and all(len(word) > 2 for word in query.split())
-        
-        # Create ILIKE conditions for each keyword
-        keyword_conditions = []
-        
-        # For possible names, try the exact phrase
-        if is_name_search:
-            full_phrase = " ".join(keywords)
-            keyword_conditions.append(f"content ILIKE '%{full_phrase}%'")
-            # Also search for the name in reverse order (e.g., "Moore, Brian")
-            if len(keywords) == 2:
-                reverse_phrase = f"{keywords[1]}, {keywords[0]}"
-                keyword_conditions.append(f"content ILIKE '%{reverse_phrase}%'")
-        
-        # Always include individual keyword search
-        for keyword in keywords:
-            if len(keyword) > 3:  # Only use keywords with more than 3 characters
-                keyword_conditions.append(f"content ILIKE '%{keyword}%'")
-        
-        # Combine with OR
-        if keyword_conditions:
-            keyword_sql = " OR ".join(keyword_conditions)
-        else:
-            # Fallback if no valid keywords
-            keyword_sql = "1=1"
-        
-        logging.info(f"SQL search keywords: {keywords}")
-        logging.info(f"SQL conditions: {keyword_sql}")
-        
-        # Try using the basic document search first
-        basic_docs = basic_document_search(doc_name, limit=5)
-        if basic_docs:
-            logging.info(f"Basic document search returned {len(basic_docs)} results")
-            for i, doc in enumerate(basic_docs):
-                logging.info(f"Basic result {i+1}: {doc.page_content[:100]}...")
-        
-        # SIMPLIFIED VERSION: Just try to get any documents first
-        if doc_name:
-            try:
-                # Try explicit query with direct column references
-                sql_query = """
-                    SELECT * FROM documents
-                    WHERE doc_name = %s
-                    LIMIT %s;
-                """
-                logging.info(f"Executing simplified SQL query for document: {doc_name}")
-                cursor.execute(sql_query, (doc_name, limit))
-                results = cursor.fetchall()
-                logging.info(f"Simple SQL query returned {len(results)} results")
-                
-                # Get column names
-                col_names = [desc[0] for desc in cursor.description]
-                
-                # Build Document objects
-                documents = []
-                for row in results:
-                    # Map row to dict
-                    row_dict = {}
-                    for i, col_name in enumerate(col_names):
-                        row_dict[col_name] = row[i]
-                    
-                    # Extract content and metadata
-                    content = row_dict.get('content', '')
-                    
-                    # Build metadata
-                    metadata = {}
-                    if 'metadata' in row_dict and row_dict['metadata']:
-                        metadata = row_dict['metadata']
-                    elif 'doc_name' in row_dict:
-                        metadata['source'] = row_dict['doc_name']
-                    if 'page_number' in row_dict:
-                        metadata['page'] = row_dict['page_number']
-                    
-                    # Create document
-                    doc = Document(page_content=content, metadata=metadata)
-                    documents.append(doc)
-                
-                logging.info(f"SQL keyword search found {len(documents)} results")
-                cursor.close()
-                conn.close()
-                return documents
+        # If no valid terms, return empty list
+        if not terms:
+            return []
             
-            except Exception as e:
-                logging.error(f"Error in simplified SQL query: {str(e)}")
+        sql = """
+            SELECT id, doc_name, page_number, content, metadata, 
+                   CASE 
+                     WHEN metadata->>'has_tables' = 'true' THEN %s
+                     ELSE 1.0
+                   END AS boost_factor
+            FROM documents
+            WHERE (
+        """
+        
+        params = [table_boost]
+        conditions = []
+        
+        # Build search conditions for each term (AND logic between terms)
+        for term in terms:
+            term_conditions = []
+            
+            # Basic content search
+            term_conditions.append("content ILIKE %s")
+            params.append(f"%{term}%")
+            
+            # Table-specific search if enabled
+            if include_tables:
+                # Search for terms in content containing table markers
+                term_conditions.append("(content ILIKE %s AND content ILIKE %s)")
+                params.append(f"%{term}%")
+                params.append("%[TABLE%")
+                
+                # Search using table metadata
+                term_conditions.append("(metadata->>'has_tables' = 'true' AND content ILIKE %s)")
+                params.append(f"%{term}%")
+            
+            conditions.append("(" + " OR ".join(term_conditions) + ")")
+        
+        # Combine all term conditions with AND
+        sql += " AND ".join(conditions)
+        
+        # Add document filter if specified
+        if doc_name:
+            sql += " AND (doc_name = %s OR metadata->>'source' = %s)"
+            params.append(doc_name)
+            params.append(doc_name)
+            
+        # Sort by relevance score (number of terms matched) and boost factor
+        sql += """
+            )
+            ORDER BY (
+                -- Count occurrences of each search term
+                """ + " + ".join([f"CASE WHEN content ILIKE %s THEN 1 ELSE 0 END" for _ in terms]) + """
+            ) * boost_factor DESC, 
+            id ASC
+            LIMIT %s
+        """
+        
+        # Add params for the ILIKE conditions in ORDER BY
+        for term in terms:
+            params.append(f"%{term}%")
+            
+        # Add limit parameter
+        params.append(limit)
+        
+        # Execute the query
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        
+        logging.info(f"SQL keyword search found {len(rows)} results")
+        
+        # Process results
+        documents = []
+        for row in rows:
+            doc_id, doc_name, page_num, content, meta, boost = row
+            
+            # Get metadata
+            if meta:
+                # Convert metadata from JSON
+                try:
+                    metadata = meta
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+                except:
+                    metadata = {"source": doc_name}
+                    if page_num:
+                        metadata["page"] = page_num
+            else:
+                metadata = {"source": doc_name}
+                if page_num:
+                    metadata["page"] = page_num
+            
+            # Check if this chunk contains tables
+            has_tables = metadata.get('has_tables', False)
+            if has_tables:
+                logging.info(f"Found chunk with tables: {doc_id}")
+                # Add a flag that can help the LLM identify table content
+                metadata["contains_tables"] = True
+                metadata["result_from_table_search"] = include_tables
+            
+            # Create document
+            doc = Document(
+                page_content=content,
+                metadata=metadata
+            )
+            documents.append(doc)
         
         cursor.close()
         conn.close()
-        return []
-    
+        
+        return documents
+        
     except Exception as e:
-        logging.error(f"Error in SQL keyword search: {str(e)}")
+        logging.error(f"SQL keyword search error: {str(e)}", exc_info=True)
         if conn and not conn.closed:
             conn.close()
         return []
