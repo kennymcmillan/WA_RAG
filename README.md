@@ -210,6 +210,38 @@ The chunking system uses a nuanced set of text separators to maintain semantic b
 - **Vector Search Issues**: Make sure the pgvector extension is properly installed in your PostgreSQL database
 - **API Limits**: If you encounter rate limits with OpenRouter, consider upgrading your API tier
 
+## Deployment to Streamlit Cloud
+
+This application can be easily deployed to Streamlit Cloud for sharing with others.
+
+### Transferring Environment Variables to Streamlit Cloud
+
+For Streamlit Cloud deployment, you'll need to transfer your environment variables to Streamlit's secrets management system. Two utility scripts are provided to help with this process:
+
+1. **For cloud deployment**: 
+   ```bash
+   python deploy_secrets.py
+   ```
+   This script will read your `.env` file and generate a formatted output that you can directly copy and paste into Streamlit Cloud's secrets management interface.
+
+2. **For local development with secrets.toml**:
+   ```bash
+   python env_to_streamlit.py
+   ```
+   This script will read your `.env` file and create a `.streamlit/secrets.toml` file that can be used for local development with the Streamlit secrets API.
+
+### Deployment Steps
+
+1. Push your code to a GitHub repository
+2. Sign in to [Streamlit Cloud](https://share.streamlit.io/)
+3. Click "New app" and select your repository
+4. Set the main file path to `app.py`
+5. Run `python deploy_secrets.py` locally to generate the secrets format
+6. Copy the output and paste it into the Streamlit Cloud secrets management panel
+7. Deploy your app!
+
+The application is configured to automatically detect whether it's running locally or in Streamlit Cloud and will use the appropriate source for environment variables.
+
 ## License
 
 [Specify your license]

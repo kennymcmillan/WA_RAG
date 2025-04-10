@@ -28,10 +28,50 @@ import numpy as np
 from langchain_community.vectorstores.pgvector import PGVector
 import psycopg2
 
-# --- Specify .env file path explicitly ---
+# --- Environment setup and variable loading ---
+# Load environment variables from .env file or Streamlit secrets
+logging.info("Loading environment variables.")
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(dotenv_path)
-# --- End explicit .env loading ---
+
+# First try loading from .env file (local development)
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path)
+    logging.info("Loaded environment variables from .env file.")
+
+# Check if we're in a Streamlit Cloud environment and use secrets if available
+try:
+    if 'database' in st.secrets:
+        # Map database section to environment variables
+        os.environ["DB_NAME"] = st.secrets.database.get("DB_NAME", os.environ.get("DB_NAME", ""))
+        os.environ["DB_USER"] = st.secrets.database.get("DB_USER", os.environ.get("DB_USER", ""))
+        os.environ["DB_PASSWORD"] = st.secrets.database.get("DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
+        os.environ["DB_HOST"] = st.secrets.database.get("DB_HOST", os.environ.get("DB_HOST", ""))
+        os.environ["DB_PORT"] = st.secrets.database.get("DB_PORT", os.environ.get("DB_PORT", ""))
+        logging.info("Loaded database credentials from Streamlit secrets.")
+        
+    if 'dropbox' in st.secrets:
+        # Map Dropbox section to environment variables
+        os.environ["DROPBOX_APPKEY"] = st.secrets.dropbox.get("DROPBOX_APPKEY", os.environ.get("DROPBOX_APPKEY", ""))
+        os.environ["DROPBOX_APPSECRET"] = st.secrets.dropbox.get("DROPBOX_APPSECRET", os.environ.get("DROPBOX_APPSECRET", ""))
+        os.environ["DROPBOX_REFRESH_TOKEN"] = st.secrets.dropbox.get("DROPBOX_REFRESH_TOKEN", os.environ.get("DROPBOX_REFRESH_TOKEN", ""))
+        os.environ["DROPBOX_TOKEN"] = st.secrets.dropbox.get("DROPBOX_TOKEN", os.environ.get("DROPBOX_TOKEN", ""))
+        logging.info("Loaded Dropbox credentials from Streamlit secrets.")
+        
+    if 'openrouter' in st.secrets:
+        # Map OpenRouter section to environment variables
+        os.environ["OPENROUTER_API_KEY"] = st.secrets.openrouter.get("OPENROUTER_API_KEY", os.environ.get("OPENROUTER_API_KEY", ""))
+        logging.info("Loaded OpenRouter API key from Streamlit secrets.")
+        
+    if 'general' in st.secrets:
+        # Map any other variables from general section
+        for key, value in st.secrets.general.items():
+            os.environ[key] = value
+        logging.info("Loaded general variables from Streamlit secrets.")
+except Exception as e:
+    logging.warning(f"Could not load from Streamlit secrets: {str(e)}")
+    logging.info("Continuing with environment variables from .env file or system environment.")
+
+logging.info("Environment variables loaded successfully.")
 
 # Import utility functions
 from app_database import get_db_connection, initialize_pgvector, save_document_to_db, get_connection_string, load_documents_from_database, inspect_database_contents

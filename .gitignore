@@ -3,3 +3,6 @@
 faiss_db
 faiss_index
 checkcode
+
+# Streamlit secrets
+.streamlit/secrets.toml
