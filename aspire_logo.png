@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<link href="https://fonts.googleapis.com/css?family=Roboto+Condensed:700|Roboto:400,700" rel="stylesheet">
+<link rel="stylesheet" href="/assets/css/all.min.css">
+<link rel="stylesheet" href="/assets/css/bootstrap.min.css">
+<link rel="stylesheet" href="/assets/css/animate.css">
+<link rel="stylesheet" href="/assets/css/owl.carousel.min.css">
+<link rel="stylesheet" href="/assets/css/owl.theme.default.min.css">
+<link rel="stylesheet" href="/assets/css/academy-styles.css">
+	<link rel="stylesheet" href="/assets/css/style.css">
+<title>404 not found</title>
+    <style>
+        .error_404 {
+            background: #003676;
+            width: 100%;
+            min-height: calc(100vh);
+        }
+
+        .error_body {
+            color: #fff;
+            font-size: 1rem;
+            line-height: 1.5rem;
+            position: absolute;
+            top: 35%;
+        }
+    </style>
+</head>
+<body>
+	<div class="error_404">
+		
+		<div class="container ">
+			
+				<div class="error_body">
+					<div class="row">
+                        <div class="col-md-6">
+                            <img src="images/aspire-academy-logo.svg" alt="Aspire Academy Home">
+                            <div class="clearfix line"></div>
+                            404. That's an error<br>
+                            The requested URL was not found on this server.<br>
+                            <a class="button xs-mb-10 " href="/home">Back to home</a>
+                        </div>
+				<div class="col-md-6">
+					<img src="/images/404.png" alt="404">
+				</div>
+				</div>
+			</div>
+			</div>
+</div>
+
+
+</body>
+</html>

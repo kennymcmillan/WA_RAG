@@ -1,0 +1,16 @@
+streamlit
+PyPDF2
+python-dotenv
+openai
+langchain
+langchain-community>=0.0.20
+langchain-huggingface
+psycopg2-binary
+numpy
+dropbox
+streamlit-pdf-viewer
+tqdm
+langchain-postgres
+sentence-transformers
+huggingface-hub
+pgvector
