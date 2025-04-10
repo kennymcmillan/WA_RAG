@@ -787,9 +787,9 @@ def natural_language_sql_search(query: str, doc_name: str, limit: int = 30) -> L
     """
     try:
         # Import LangChain modules for SQL
-        from langchain.utilities import SQLDatabase
-        from langchain.chains import SQLDatabaseChain
-        from langchain.llms import OpenRouter
+        from langchain_community.utilities import SQLDatabase
+        from langchain_community.chains import SQLDatabaseChain
+        from langchain_community.llms import OpenRouter
         import os
 
         # Get DB connection string

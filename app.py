@@ -454,188 +454,87 @@ def main():
                 raw_retrieved_docs = hybrid_retriever(user_question, vector_store, selected_doc, limit=50)
                 logging.info(f"Hybrid retriever found {len(raw_retrieved_docs)} documents")
                     
-                    # Enhance results with parent context
-                if raw_retrieved_docs:
-                    raw_retrieved_docs = fetch_parent_context(raw_retrieved_docs, selected_doc)
-                    logging.info(f"After fetching parent context: {len(raw_retrieved_docs)} documents")
+                    # Collect and display details about the retrieved docs
+                if raw_retrieved_docs and len(raw_retrieved_docs) > 0:
+                    logging.info(f"Found {len(raw_retrieved_docs)} docs, fetching parent contexts...")
+                    # Add parent context to improve coherence
+                    retrieved_docs = fetch_parent_context(raw_retrieved_docs, parent_limit=2)
+                    logging.info(f"After parent context: {len(retrieved_docs)} docs")
                     
-                    # Show debug info in UI if enabled
-                    with st.expander("Debug Information", expanded=True):
+                    # Display diagnostic info about docs
+                    with st.expander("Debug Information", expanded=False):
                         st.write("### Query Analysis")
-                        st.write(f"Query: '{user_question}'")
-                        st.write(f"Selected document: {st.session_state.selected_docs[0] if st.session_state.selected_docs else 'None'}")
+                        st.text(f"Query: {user_question}")
+                        st.text(f"Document: {selected_doc}")
+                        st.text(f"Raw retrieved docs: {len(raw_retrieved_docs)}")
+                        st.text(f"Retrieved docs with parent context: {len(retrieved_docs)}")
                         
-                        # Add more detailed breakdown of results
-                        st.write("### Search Results")
-                        # Add these lines to track metrics from the hybrid retriever
-                        sql_count = getattr(raw_retrieved_docs, 'sql_count', 0)
-                        vector_count = getattr(raw_retrieved_docs, 'vector_count', 0)
-                        fallback_count = getattr(raw_retrieved_docs, 'fallback_count', 0)
-                        
-                        st.write(f"Hybrid search found: {len(raw_retrieved_docs)} chunks total")
-                        st.write(f"- SQL search found: {sql_count} chunks")
-                        st.write(f"- Vector search found: {vector_count} chunks")
-                        if fallback_count > 0:
-                            st.write(f"- Emergency fallback used: {fallback_count} chunks")
-                        
-                        # If there are parent documents, show that info
-                        parent_count = getattr(raw_retrieved_docs, 'parent_count', 0)
-                        if parent_count > 0:
-                            st.write(f"- Added {parent_count} parent documents for context")
-                            
-                        # Database Contents Check section
+                        # Additional metrics
+                        st.text(f"SQL search found: {getattr(retrieved_docs, 'sql_count', 0)} chunks")
+                        st.text(f"Vector search found: {getattr(retrieved_docs, 'vector_count', 0)} chunks")
+                        st.text(f"Fallback search used: {getattr(retrieved_docs, 'fallback_count', 0)} chunks")
+                        st.text(f"Parent documents added: {getattr(retrieved_docs, 'parent_count', 0)} chunks")
+                    
+                    # Move these OUTSIDE the Debug Information expander to fix nesting issue
+                    with st.expander("Diagnostics", expanded=False):
                         st.write("### Database Contents Check")
-                        doc_check = check_document_exists(selected_doc)
-                        if "error" not in doc_check:
-                            st.write(f"Total document chunks in DB: {doc_check['total_docs']}")
-                            st.write(f"Available documents: {', '.join(doc_check['doc_names'])}")
-                            
-                            if selected_doc and doc_check['specific_doc']:
-                                if doc_check['specific_doc']['exists']:
-                                    st.success(f"Document '{selected_doc}' exists with {doc_check['specific_doc']['chunk_count']} chunks")
-                                    st.write("#### Sample Content:")
-                                    st.write(doc_check['specific_doc']['sample_content'])
-                                    st.write("#### Sample Metadata:")
-                                    st.json(doc_check['specific_doc']['sample_metadata'])
-                                else:
-                                    st.error(f"Document '{selected_doc}' NOT FOUND in database!")
+                        # Prepare sources list
+                        sources = []
+                        for doc in retrieved_docs:
+                            source = f"{doc.metadata.get('source', 'Unknown')} - Page {doc.metadata.get('page', 'Unknown')}"
+                            if source not in sources:
+                                sources.append(source)
+                                
+                        # Context metrics
+                        total_content = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                        char_count = len(total_content)
+                        
+                        # Add the context feedback inside diagnostics
+                        st.text(f"Context for question has {char_count} characters from {len(sources)} sources")
+                        st.text(f"Sources used: {', '.join(sources[:5])}{'...' if len(sources) > 5 else ''}")
+                        
+                        # Display database contents check
+                        st.write("### Retrieved Content Sample")
+                        max_samples = min(3, len(retrieved_docs))
+                        for i in range(max_samples):
+                            doc = retrieved_docs[i]
+                            st.write(f"**{doc.metadata.get('source', 'Unknown')} - Page {doc.metadata.get('page', 'Unknown')}**")
+                            st.text(doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content)
+                    
+                    with st.expander("Vector Diagnostics", expanded=False):
+                        st.write("### Vector Store Analysis")
+                        st.text(f"Vector similarity search used: {getattr(retrieved_docs, 'vector_count', 0) > 0}")
+                        
+                        if hasattr(retrieved_docs, 'vector_count') and retrieved_docs.vector_count > 0:
+                            st.text("Vector search is functioning correctly!")
+                            st.text(f"Number of vector search results: {retrieved_docs.vector_count}")
                         else:
-                            st.error(f"Error checking database: {doc_check['error']}")
-                            
-                        # Vector Search Diagnostics section
-                        st.write("### Vector Search Diagnostics")
-                        try:
-                            diagnostics = diagnose_vector_search_issues(selected_doc)
-                            
-                            # Show summary statistics
-                            st.write(f"Total documents: {diagnostics['total_documents']}")
-                            st.write(f"Documents with embeddings: {diagnostics['documents_with_embeddings']}")
-                            
-                            # Document-specific information
-                            if selected_doc and 'doc_count' in diagnostics:
-                                st.write(f"Selected document '{selected_doc}':")
-                                st.write(f"- Document chunks: {diagnostics['doc_count']}")
-                                st.write(f"- Chunks with embeddings: {diagnostics.get('doc_embedding_count', 0)}")
-                            
-                            # Show embedding samples
-                            if diagnostics['embedding_samples']:
-                                with st.expander("Embedding Samples"):
-                                    for i, sample in enumerate(diagnostics['embedding_samples']):
-                                        st.write(f"Sample {i+1}:")
-                                        st.write(f"- Has embedding: {sample['has_embedding']}")
-                                        st.write(f"- Embedding dimensions: {sample['embedding_dimensions']}")
-                                        st.write(f"- Content: {sample['content_preview']}")
-                                        st.write(f"- Metadata: {sample['metadata']}")
-                                        st.write("---")
-                            
-                            # Show issues if any
-                            if diagnostics['issues']:
-                                st.error("Issues detected:")
-                                for issue in diagnostics['issues']:
-                                    st.write(f"- {issue}")
-                            elif 'status' in diagnostics:
-                                st.success(diagnostics['status'])
-                        except Exception as e:
-                            st.error(f"Error running vector diagnostics: {str(e)}")
+                            st.warning("Vector search returned no results. This may indicate:")
+                            st.text("1. No embeddings in the database")
+                            st.text("2. pgvector extension not properly configured")
+                            st.text("3. Filter conditions excluding all results")
+                            st.text("4. Issue with the langchain_pg_embedding table")
                     
-                    # Use the retrieved documents directly
-                    if st.session_state.selected_docs and raw_retrieved_docs:
-                        retrieved_docs = raw_retrieved_docs
-                        logging.info(f"Using {len(retrieved_docs)} chunks from hybrid retriever")
-                    else:
-                        retrieved_docs = []
-                        logging.warning("No documents retrieved")
-                        
-                    logging.info("--- After filtering ---")
-                    logging.info(f"Final results: {len(retrieved_docs)} chunks.")
-                
-                    # Generate answer only if we have relevant chunks
-                if not retrieved_docs:
-                    answer = "I don't have enough information in the selected documents to answer that question."
-                    sources = []
-                else:
-                        # Extract context and sources from retrieved LangChain Documents
-                    logging.info("Extracting context and sources from retrieved chunks.")
-                    context_parts = []
-                    sources = set() # Use a set to avoid duplicate source listings
-                        
-                        # Sort documents by source and page for better organization
-                    sorted_docs = sorted(retrieved_docs, 
-                                            key=lambda x: (x.metadata.get('source', 'Unknown'), 
-                                                          x.metadata.get('page', 0)))
-                        
-                        # Process documents with better formatting
-                    for doc in sorted_docs:
-                        source = doc.metadata.get('source', 'Unknown Source')
-                        page = doc.metadata.get('page', 'Unknown Page')
-                            
-                            # Check if this is a parent or child document for debugging
-                        doc_type = "Parent" if doc.metadata.get('is_parent', False) else "Child"
-                        logging.info(f"Adding {doc_type} document from {source} (Page {page})")
-                            
-                            # Add formatted context with clear source attribution
-                        context_parts.append(f"From {source} (Page {page}):\n{doc.page_content.strip()}")
-                        sources.add(f"{source} (Page {page})")
-                    
-                        # Join with double newlines for clear separation between chunks
-                    context = "\n\n".join(context_parts)
-                    sources = sorted(list(sources)) # Convert back to sorted list for display
-                    logging.info(f"Generated context for LLM with {len(context_parts)} chunks from {len(sources)} sources")
-
-                        # Debug: Show context length and structure
-                    st.info(f"Context for question has {len(context)} characters from {len(sources)} sources")
-                        
-                        # Add sample of context with visible chunk separators for debugging
-                    with st.expander("Sample of context sent to LLM"):
-                            # Show the first 3 chunks for debugging
-                        st.markdown("```")
-                        for i, chunk in enumerate(context_parts[:3]):
-                            st.markdown(f"Chunk {i+1}:\n{chunk[:300]}...\n\n")
-                            st.markdown("```")
-                            st.info(f"Showing 3 of {len(context_parts)} total chunks")
-
-                        # Add keyword detection
-                        keywords = [k for k in user_question.lower().split() if len(k) > 3]
-                        if keywords:
-                            keyword_counts = {}
-                            for chunk in context_parts:
-                                chunk_lower = chunk.lower()
-                                for keyword in keywords:
-                                    if keyword in chunk_lower:
-                                        if keyword in keyword_counts:
-                                            keyword_counts[keyword] += 1
-                                        else:
-                                            keyword_counts[keyword] = 1
-                                                
-                            st.markdown("**Keyword Frequency in Context:**")
-                            for keyword, count in keyword_counts.items():
-                                st.text(f"'{keyword}': found in {count} of {len(context_parts)} chunks")
-
-                    # Generate answer
-                        logging.info("--- Before get_answer ---")
-                    with st.spinner("Generating answer..."):
-                        answer = get_answer(user_question, context)
+                    # Use sources to create context
+                    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    if len(context) > 0:
+                        # Get answer from LLM using the context
+                        answer, sources_text = get_answer(user_question, context, retrieved_docs)
                         logging.info("--- After get_answer ---")
-                    logging.info("Answer received from OpenRouter.")
-
-                # Display assistant response
-                with st.chat_message("assistant"):
-                    st.markdown(answer)
-                    
-                    # Display sources (only if sources were found)
-                    if sources:
-                        st.markdown("<div class='source-citation'>", unsafe_allow_html=True)
-                        st.markdown("**Sources:**", unsafe_allow_html=True)
-                        for source in sources:
-                            st.markdown(f"- {source}", unsafe_allow_html=True)
-                        st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Add assistant response to chat history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer,
-                    "sources": sources
-                })
+                        
+                        # Display the answer
+                        st.markdown("### Answer")
+                        st.markdown(answer)
+                        
+                        # Display sources used
+                        if sources_text:
+                            st.markdown("### Sources")
+                            st.markdown(sources_text)
+                    else:
+                        st.warning("No context found to generate an answer.")
+                else:
+                    logging.warning("No documents retrieved")
+                    st.warning("No relevant documents found for your question. Please try rephrasing your question or select a different document.")
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
