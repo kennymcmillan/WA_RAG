@@ -774,8 +774,8 @@ def fetch_parent_context(child_docs, parent_limit=3):
 
 def natural_language_sql_search(query: str, doc_name: str, limit: int = 30) -> List[Document]:
     """
-    Performs a more intelligent SQL search using LangChain's SQLDatabaseChain
-    to convert natural language queries to SQL.
+    Performs a more intelligent SQL search using advanced techniques from the article
+    without relying on LangChain's SQLDatabaseChain.
     
     Args:
         query: User query in natural language
@@ -785,125 +785,123 @@ def natural_language_sql_search(query: str, doc_name: str, limit: int = 30) -> L
     Returns:
         List of matching documents
     """
+    # Check for required scikit-learn packages first with a clear error message
     try:
-        # Import LangChain modules for SQL
-        from langchain_community.utilities import SQLDatabase
-        from langchain_community.chains import SQLDatabaseChain
-        from langchain_community.llms import OpenRouter
-        import os
-
-        # Get DB connection string
-        conn_string = get_connection_string()
-        if not conn_string:
-            logger.error("Failed to get database connection string")
+        import numpy as np
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError as e:
+        logger.error(f"Required ML packages missing: {str(e)}.")
+        logger.error("Please install scikit-learn and numpy: pip install scikit-learn numpy")
+        logger.warning("Falling back to simple SQL search due to missing dependencies")
+        return simple_sql_search(query, doc_name, limit)
+    
+    try:
+        # First, get all document chunks for this document using SQL
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to connect to database")
             return []
-        
-        # Connect to the database
-        db = SQLDatabase.from_uri(conn_string)
-        
-        # Get LLM using OpenRouter instead of OpenAI
-        # Check if OPENROUTER_API_KEY exists in environment variables
-        openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-        if not openrouter_api_key:
-            logger.warning("No OPENROUTER_API_KEY found, using simple SQL search instead")
-            return simple_sql_search(query, doc_name, limit)
             
-        # Use Claude 3 Haiku (fastest/cheapest) for SQL generation tasks
-        llm = OpenRouter(
-            api_key=openrouter_api_key,
-            model="anthropic/claude-3-haiku", 
-            temperature=0
-        )
+        cursor = conn.cursor()
         
-        # Create a prompt that emphasizes searching for relevant content
-        # and filtering by document name
-        nl_query = f"""
-        Find content in the 'documents' table that is relevant to: '{query}'.
-        Only look for documents where doc_name = '{doc_name}'.
-        The table has columns: id, doc_name, page_number, content, metadata.
-        Return at most {limit} rows.
-        Focus on finding the most relevant content based on semantic meaning, 
-        not just exact keyword matches.
+        # Get document chunks
+        doc_sql = """
+            SELECT id, doc_name, page_number, content, metadata 
+            FROM documents 
+            WHERE doc_name = %s
+            LIMIT 200;
         """
         
-        # Create the chain
-        db_chain = SQLDatabaseChain.from_llm(llm, db, verbose=True)
+        cursor.execute(doc_sql, (doc_name,))
+        rows = cursor.fetchall()
         
-        # Run the chain to generate and execute SQL
-        logger.info(f"Generating SQL for query: '{query}' in document '{doc_name}'")
-        result = db_chain.run(nl_query)
-        logger.info(f"SQLDatabaseChain result: {result}")
-        
-        # If the chain doesn't return the actual documents, we need to parse the result
-        # and execute the query ourselves
-        
-        # Extract SQL query if present in the result
-        import re
-        sql_match = re.search(r"```sql\s*(.*?)\s*```", result, re.DOTALL)
-        
-        if not sql_match:
-            # Try another pattern without the markdown code block
-            sql_match = re.search(r"SELECT\s+.*?\s+FROM\s+.*?(?:;|$)", result, re.DOTALL | re.IGNORECASE)
-        
-        if sql_match:
-            sql_query = sql_match.group(0).strip()
-            logger.info(f"Extracted SQL query: {sql_query}")
+        if not rows:
+            logger.warning(f"No documents found for {doc_name}")
+            return []
             
-            # Execute the query
-            conn = get_db_connection()
-            if not conn:
-                logger.error("Failed to connect to database")
-                return []
-                
-            cursor = conn.cursor()
+        logger.info(f"Found {len(rows)} document chunks for {doc_name}")
+        
+        # Extract contents for TF-IDF
+        contents = []
+        doc_objects = []
+        
+        for row in rows:
             try:
-                cursor.execute(sql_query)
-                rows = cursor.fetchall()
-                logger.info(f"SQL query returned {len(rows)} results")
+                doc_id, row_doc_name, page_num, content, meta = row
                 
-                # Process the results
-                documents = []
-                for row in rows:
-                    try:
-                        # The columns will depend on what was selected in the generated SQL
-                        # We'll need to adapt this based on the actual results
-                        
-                        # If we have a full row from the documents table
-                        if len(row) >= 4:
-                            doc_id = row[0]
-                            row_doc_name = row[1] if len(row) > 1 else doc_name
-                            page_num = row[2] if len(row) > 2 else 0
-                            content = row[3] if len(row) > 3 else ""
-                            
-                            # Skip empty content
-                            if not content:
-                                continue
-                                
-                            # Create document
-                            documents.append(Document(
-                                page_content=content,
-                                metadata={"source": row_doc_name, "page": page_num}
-                            ))
-                    except Exception as e:
-                        logger.error(f"Error processing row: {str(e)}")
+                # Skip empty content
+                if not content or len(content.strip()) == 0:
+                    continue
+                    
+                # Add to contents list for vectorization
+                contents.append(content)
                 
-                cursor.close()
-                conn.close()
-                return documents
-                
+                # Build document object
+                metadata = {}
+                if meta and isinstance(meta, dict):
+                    metadata = meta
+                else:
+                    metadata = {"source": row_doc_name, "page": page_num}
+                    
+                doc_objects.append({
+                    "content": content,
+                    "metadata": metadata
+                })
             except Exception as e:
-                logger.error(f"Error executing generated SQL: {str(e)}")
-                cursor.close()
-                conn.close()
+                logger.error(f"Error processing row: {str(e)}")
+                continue
+                
+        # If we couldn't get any content, return empty list
+        if not contents:
+            logger.warning("No valid content found in document chunks")
+            cursor.close()
+            conn.close()
+            return []
         
-        # If we couldn't extract or execute SQL, fall back to simple SQL search
-        logger.warning("Falling back to simple SQL search")
-        return simple_sql_search(query, doc_name, limit)
+        # Use TF-IDF to find similarity between query and documents
+        try:
+            # Initialize TF-IDF vectorizer
+            vectorizer = TfidfVectorizer(stop_words='english')
+            
+            # Fit and transform document contents
+            tfidf_matrix = vectorizer.fit_transform(contents)
+            
+            # Transform query
+            query_vector = vectorizer.transform([query])
+            
+            # Calculate cosine similarity
+            cosine_similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
+            
+            # Get top matches
+            top_indices = cosine_similarities.argsort()[-limit:][::-1]
+            
+            # Filter for minimum similarity
+            min_similarity = 0.01  # Small threshold to include more results
+            relevant_indices = [idx for idx in top_indices if cosine_similarities[idx] > min_similarity]
+            
+            logger.info(f"TF-IDF found {len(relevant_indices)} relevant chunks with similarity > {min_similarity}")
+            
+            # Create Document objects from relevant chunks
+            documents = []
+            for idx in relevant_indices:
+                doc_info = doc_objects[idx]
+                documents.append(Document(
+                    page_content=doc_info["content"],
+                    metadata=doc_info["metadata"]
+                ))
+            
+            cursor.close()
+            conn.close()
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error in TF-IDF similarity calculation: {str(e)}")
+            # Fall back to simple SQL search
+            cursor.close()
+            conn.close()
+            return simple_sql_search(query, doc_name, limit)
         
-    except ImportError as e:
-        logger.error(f"Missing required packages for natural language SQL search: {str(e)}")
-        # Fall back to simple SQL search
-        return simple_sql_search(query, doc_name, limit)
     except Exception as e:
         logger.error(f"Error in natural language SQL search: {str(e)}")
         # Fall back to simple SQL search
