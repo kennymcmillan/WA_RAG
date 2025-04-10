@@ -573,8 +573,8 @@ def main():
         # Add an initial welcome message if the chat is empty
         if not st.session_state.messages:
             with st.chat_message("assistant"):
-                if not os.getenv("DATABASE_URL"):
-                    st.markdown("**WARNING: Database URL not found in environment.**\n\nI'm ready to answer questions about your selected documents. What would you like to know?")
+                if not os.getenv("DB_NAME") or not os.getenv("DB_HOST") or not os.getenv("DB_PORT"):
+                    st.markdown("**WARNING: Database connection parameters missing.**\n\nI'm ready to answer questions about your selected documents. What would you like to know?")
                 else:
                     st.markdown("I'm ready to answer questions about your selected documents. What would you like to know?")
                 st.session_state.messages.append({"role": "assistant", "content": "I'm ready to answer questions about your selected documents. What would you like to know?"})
